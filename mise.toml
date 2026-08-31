@@ -1,0 +1,45 @@
+[tools]
+"github:orhun/git-cliff" = "2.13.1"
+actionlint = "1.7.12"
+pinact = "4.1.1"
+biome = "2.5.4"
+ghalint = "1.5.6"
+gitleaks = "8.30.1"
+hk = "1.56.1"
+shellcheck = "0.11.0"
+"aqua:anordal/shellharden" = "4.3.2"
+shfmt = "3.14.0"
+lua = "5.4"
+rumdl = "0.2.62"
+stylua = "2.5.2"
+tombi = "1.5.0"
+typos = "1.50.0"
+uv = "0.12.7"
+"github:owenlamont/ryl" = "0.21.0"
+zizmor = "1.29.0"
+
+[tasks.docs]
+run = "uvx --from git+https://github.com/hugoh/spoon-tools spoon-generate-docs"
+description = "Generate docs/docs.json and docs/index.html from docstrings"
+
+[tasks.package]
+depends = ["docs"]
+run = """
+rm -rf dist
+mkdir -p dist/TeamsControl.spoon
+cp init.lua LICENSE README.md docs/docs.json dist/TeamsControl.spoon/
+cd dist
+zip -r ../TeamsControl.spoon.zip TeamsControl.spoon
+cd ..
+rm -rf dist
+"""
+description = "Build a self-contained TeamsControl.spoon.zip (includes docs.json)"
+
+[tasks.test]
+run = "busted test_spec.lua --verbose"
+
+[hooks]
+postinstall = ["luarocks install busted", "luarocks install luacheck"]
+
+[settings]
+experimental = true

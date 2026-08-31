@@ -1,0 +1,15 @@
+name: Tests
+
+permissions:
+  contents: read
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+      - renovate/**
+  pull_request:
+
+jobs:
+  test:
+    uses: hugoh/spoon-tools/.github/workflows/spoon-tests.yml@9b0196dd06b709ae53174c5075a06c7b948c5810 # v1.2.3
