@@ -259,13 +259,16 @@ function obj:bindHotkeys(mapping)
 	return self
 end
 
---- TeamsControl:start()
+--- TeamsControl:init()
 --- Method
---- No-op kept for Spoon lifecycle symmetry; TeamsControl acts only on `toggleMute()`.
+--- Called automatically by `hs.loadSpoon()`. Logs the loaded version.
 ---
 --- Returns:
 ---  * The TeamsControl object, for method chaining
-function obj:start() return self end
+function obj:init()
+	self.log.f("Loaded %s v%s", self.name, self.version)
+	return self
+end
 
 --- TeamsControl:stop()
 --- Method
