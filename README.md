@@ -3,16 +3,15 @@
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Hammerspoon Spoon](https://img.shields.io/badge/Hammerspoon-Spoon-FFA500.svg)](https://www.hammerspoon.org/docs/index.html)
 
-A Hammerspoon Spoon that toggles the Microsoft Teams meeting microphone from a single hotkey, from any app — and actually tells you whether it worked.
+A Hammerspoon Spoon that toggles the Microsoft Teams meeting microphone from a single hotkey, from any app, and tells you whether it worked.
 
 **Repository**: [https://github.com/hugoh/TeamsControl.spoon](https://github.com/hugoh/TeamsControl.spoon)
 
 ## Features
 
 - One hotkey toggles mute from anywhere: if Teams isn't frontmost it's activated, the toggle is sent, then focus returns to the app you were in
-- Sends `Cmd+Shift+M`, then **confirms** the toggle registered by reading Teams' "Mute mic"/"Unmute mic" accessibility button label before and after — a real success/failure signal instead of a timeout guess
+- Sends `Cmd+Shift+M`, then confirms the toggle.
 - On-screen alert for the result: `🔶 Teams Muted` / `🎤 Teams Unmuted` on success, or a `🛑` alert (`No active Teams call`, `Teams did not activate in time`, `Mute toggle did not register`, `STILL MUTED`/`STILL UNMUTED`) on failure
-- Re-entrancy guard with a deadman timer, so a mid-toggle key press is ignored but a stuck state always clears itself
 
 ## Installation
 
@@ -68,14 +67,6 @@ hs.loadSpoon("TeamsControl"):configure({
 }):bindHotkeys({ toggleMute = { { "ctrl", "alt", "cmd" }, "m" } })
 ```
 
-## Methods
-
-- `configure(opts)` - Set any of `teamsBundleID`, `activationTimeout`, `clickSettleDelay`, `clickSettleMaxRetries`
-- `bindHotkeys(mapping)` - Bind the `toggleMute` action to a `{ {modifiers}, key }` spec
-- `toggleMute()` - Toggle the Teams meeting microphone
-- `start()` - No-op, kept for Spoon lifecycle symmetry
-- `stop()` - Unbind any hotkeys bound via `bindHotkeys`
-
 ## Security & Permissions
 
 TeamsControl reads Teams' accessibility tree and sends a synthetic keystroke, so Hammerspoon needs **Accessibility** permission (System Settings → Privacy & Security → Accessibility). It never launches anything but Teams and never shells out.
@@ -86,4 +77,4 @@ The accessibility-tree mute-button lookup (`findButton` in `init.lua`) is adapte
 
 ## API documentation
 
-Full API reference is generated from the docstrings in `init.lua` (`mise run docs`).
+Full [API reference](https://teamscontrol-spoon.larve.net/) is generated from the docstrings in `init.lua` (`mise run docs`).
