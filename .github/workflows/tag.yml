@@ -15,4 +15,4 @@ concurrency:
 
 jobs:
   tag:
-    uses: hugoh/spoon-tools/.github/workflows/spoon-tag.yml@42b2a96334e101258e72f186bd58c2db00f942f2 # v1.3.0
+    uses: hugoh/spoon-tools/.github/workflows/spoon-tag.yml@713fb1bcd3bec558aaf1932183d435292e16e0ba # v1.3.1
