@@ -179,13 +179,32 @@ function obj:toggleMute()
 		-- Re-reading the cached button element avoids re-walking Teams' deep AX
 		-- tree on every retry. If the toggle swapped the node out (the stale ref
 		-- reads nil), fall back to a fresh lookup.
-		local function currentLabel()
-			local label = btn.AXDescription or btn.AXTitle
-			if label then return label end
-			local fresh = findMuteButton(teamsApp)
-			return fresh and (fresh.AXDescription or fresh.AXTitle)
+		local function resolveButton()
+			if btn.AXDescription or btn.AXTitle then return btn end
+			return findMuteButton(teamsApp)
 		end
 
+		local function currentLabel()
+			local resolved = resolveButton()
+			return resolved and (resolved.AXDescription or resolved.AXTitle)
+		end
+
+		-- The keystroke can land on a focused text field (e.g. the Notes panel)
+		-- instead of Teams' mute shortcut handler. AXPress on the button is a
+		-- no-op on Teams' WebView2-rendered controls, so the fallback is a real
+		-- synthetic mouse click at the button's on-screen position -- that's
+		-- what actually reaches its click handler.
+		local function clickButton()
+			local resolved = resolveButton()
+			local pos = resolved and resolved.AXPosition
+			local size = resolved and resolved.AXSize
+			if not (pos and size) then return end
+			local savedMouse = hs.mouse.absolutePosition()
+			hs.eventtap.leftClick({ x = pos.x + size.w / 2, y = pos.y + size.h / 2 })
+			hs.mouse.absolutePosition(savedMouse)
+		end
+
+		local clickFallbackTried = false
 		local function checkResult(attempt)
 			local afterLabel = currentLabel()
 
@@ -194,6 +213,10 @@ function obj:toggleMute()
 				showSuccess(afterLabel)
 			elseif attempt < self.clickSettleMaxRetries then
 				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(attempt + 1) end)
+			elseif not clickFallbackTried then
+				clickFallbackTried = true
+				clickButton()
+				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(attempt) end)
 			else
 				finish(previousApp)
 				if afterLabel then

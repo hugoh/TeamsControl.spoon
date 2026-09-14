@@ -19,7 +19,15 @@ end
 -- (optionally) a mute button with the given label.
 local function makeWindow(muteLabel)
 	local children = {}
-	if muteLabel then table.insert(children, { AXRole = "AXButton", AXDescription = muteLabel, AXChildren = {} }) end
+	if muteLabel then
+		table.insert(children, {
+			AXRole = "AXButton",
+			AXDescription = muteLabel,
+			AXChildren = {},
+			AXPosition = { x = 100, y = 200 },
+			AXSize = { w = 46, h = 46 },
+		})
+	end
 	return { AXRole = "AXWindow", AXChildren = { { AXRole = "AXGroup", AXChildren = children } } }
 end
 
@@ -88,8 +96,21 @@ before_each(function()
 		end,
 	}
 
+	mock_hs._clicks = {}
 	mock_hs.eventtap = {
 		keyStroke = function(mods, key) table.insert(mock_hs._keyStrokes, { mods = mods, key = key }) end,
+		leftClick = function(point) table.insert(mock_hs._clicks, point) end,
+	}
+
+	mock_hs._mousePosition = { x = 0, y = 0 }
+	mock_hs.mouse = {
+		absolutePosition = function(point)
+			if point then
+				mock_hs._mousePosition = point
+			else
+				return mock_hs._mousePosition
+			end
+		end,
 	}
 
 	mock_hs.application = {
@@ -199,7 +220,27 @@ describe("toggleMute when Teams is frontmost", function()
 		assert.is_false(TeamsControl._muteToggleInProgress)
 	end)
 
-	it("reports failure when the label never changes", function()
+	it("falls back to clicking the button's on-screen position when the keystroke doesn't register", function()
+		local win = makeWindow("Mute mic")
+		local btn = muteButtonOf(win)
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		local origLeftClick = mock_hs.eventtap.leftClick
+		mock_hs.eventtap.leftClick = function(point)
+			origLeftClick(point)
+			btn.AXDescription = "Unmute mic"
+		end
+
+		TeamsControl:toggleMute()
+		mock_hs._fireTimers()
+
+		assert.are.same({ { x = 100 + 23, y = 200 + 23 } }, mock_hs._clicks)
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
+		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
+	it("reports failure when the label never changes even after the click fallback", function()
 		local teams = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
 		mock_hs._frontmost = teams
 
