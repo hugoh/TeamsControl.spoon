@@ -42,8 +42,9 @@ obj.clickSettleDelay = 0.15
 
 --- TeamsControl.clickSettleMaxRetries
 --- Variable
---- How many times to re-check the button label before declaring the toggle failed (default: 5).
-obj.clickSettleMaxRetries = 5
+--- How many times to re-check the button label -- after the keystroke, and again after the
+--- click fallback -- before declaring the toggle failed (default: 3).
+obj.clickSettleMaxRetries = 3
 
 obj.log = hs.logger.new("TeamsControl", "info")
 
@@ -115,10 +116,10 @@ function obj:toggleMute()
 	end
 	self._muteToggleInProgress = true
 
-	local progressIndicator = hs.alert.show("Toggling Teams mute…", self.activationTimeout + 1)
-
 	local currentApp = hs.application.frontmostApplication()
 	local isTeams = currentApp and currentApp:bundleID() == self.teamsBundleID
+
+	local progressIndicator
 
 	local function withdrawProgressIndicator()
 		if progressIndicator then
@@ -126,6 +127,15 @@ function obj:toggleMute()
 			progressIndicator = nil
 		end
 	end
+
+	-- Long fixed duration so the alert reads as "still working" rather than
+	-- ticking down; withdrawProgressIndicator() closes it as soon as we're done.
+	local function updateProgress(text)
+		withdrawProgressIndicator()
+		progressIndicator = hs.alert.show(text, self.activationTimeout + 3)
+	end
+
+	updateProgress(isTeams and "Toggling Teams mute…" or "Activating Teams…")
 
 	-- If any step below throws before finish() runs (AX traversal, keyStroke,
 	-- an app that never activates), _muteToggleInProgress would stay true and
@@ -204,19 +214,20 @@ function obj:toggleMute()
 			hs.mouse.absolutePosition(savedMouse)
 		end
 
-		local clickFallbackTried = false
-		local function checkResult(attempt)
+		-- Two phases, each with its own clickSettleMaxRetries budget: poll after the
+		-- keystroke, and if that never registers, click the button and poll again.
+		local function checkResult(phase, attempt)
 			local afterLabel = currentLabel()
 
 			if afterLabel and afterLabel ~= beforeLabel then
 				finish(previousApp)
 				showSuccess(afterLabel)
 			elseif attempt < self.clickSettleMaxRetries then
-				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(attempt + 1) end)
-			elseif not clickFallbackTried then
-				clickFallbackTried = true
+				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(phase, attempt + 1) end)
+			elseif phase == "keystroke" then
 				clickButton()
-				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(attempt) end)
+				updateProgress("Retrying Teams mute toggle…")
+				hs.timer.doAfter(self.clickSettleDelay, function() checkResult("click", 1) end)
 			else
 				finish(previousApp)
 				if afterLabel then
@@ -227,7 +238,7 @@ function obj:toggleMute()
 			end
 		end
 
-		hs.timer.doAfter(self.clickSettleDelay, function() checkResult(1) end)
+		hs.timer.doAfter(self.clickSettleDelay, function() checkResult("keystroke", 1) end)
 	end
 
 	if isTeams then
@@ -244,6 +255,7 @@ function obj:toggleMute()
 		activated = true
 		watcher:stop()
 		if timeoutTimer then timeoutTimer:stop() end
+		updateProgress("Toggling Teams mute…")
 		sendMuteToggle(appObject, currentApp)
 	end)
 	watcher:start()
