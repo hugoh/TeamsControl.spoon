@@ -56,6 +56,9 @@ local teamsControl = hs.loadSpoon("TeamsControl")
 hs.hotkey.bind({ "ctrl", "alt", "cmd" }, "m", function() teamsControl:toggleMute() end)
 ```
 
+`toggleMute()` accepts an optional callback, invoked once the toggle has settled
+(or the call was ignored as re-entrant), for driving a busy indicator.
+
 Tune behaviour with `configure()` before binding (all optional):
 
 ```lua

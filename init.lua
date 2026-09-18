@@ -50,6 +50,9 @@ obj.log = hs.logger.new("TeamsControl", "info")
 
 obj._muteToggleInProgress = false
 obj._hotkeys = nil
+obj._muteButton = nil
+
+local MUTE_LABEL_PATTERN = "ute mic$"
 
 -- Depth-first search of an accessibility subtree for the first AXButton whose
 -- description/title matches `pattern`. Teams' meeting-control buttons sit
@@ -78,10 +81,20 @@ end
 -- active, so its presence doubles as the "in a call" check.
 local function findMuteButton(teamsApp)
 	for _, win in ipairs(teamsApp:allWindows()) do
-		local btn = findButton(hs.axuielement.windowElement(win), "ute mic$")
+		local btn = findButton(hs.axuielement.windowElement(win), MUTE_LABEL_PATTERN)
 		if btn then return btn end
 	end
 	return nil
+end
+
+-- Walking Teams' AX tree blocks Hammerspoon for ~0.5-1s, so the button found
+-- by one toggle is reused by the next. A ref that went stale reads a nil label.
+local function findMuteButtonCached(self, teamsApp)
+	local remembered = self._muteButton
+	local label = remembered and (remembered.AXDescription or remembered.AXTitle)
+	if type(label) == "string" and label:match(MUTE_LABEL_PATTERN) then return remembered end
+	self._muteButton = findMuteButton(teamsApp)
+	return self._muteButton
 end
 
 --- TeamsControl:configure(opts)
@@ -107,11 +120,22 @@ end
 --- activated first, the toggle is sent, then focus is returned to the app you
 --- were in. Re-entrant calls while a toggle is already in flight are ignored.
 ---
+--- Parameters:
+---  * done - an optional function called once when the toggle has settled (or
+---    the call was ignored), so callers can drive a busy indicator
+---
 --- Returns:
 ---  * The TeamsControl object, for method chaining
-function obj:toggleMute()
+function obj:toggleMute(done)
+	local function notifyDone()
+		local callback = done
+		done = nil
+		if callback then callback() end
+	end
+
 	if self._muteToggleInProgress then
 		self.log.d("Mute toggle already in progress; ignoring")
+		notifyDone()
 		return self
 	end
 	self._muteToggleInProgress = true
@@ -143,6 +167,7 @@ function obj:toggleMute()
 	local deadmanReset = hs.timer.doAfter(self.activationTimeout + 3, function()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
+		notifyDone()
 	end)
 
 	local function finish(previousApp)
@@ -150,6 +175,7 @@ function obj:toggleMute()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
 		if previousApp then previousApp:activate() end
+		notifyDone()
 	end
 
 	-- Button label names the action it performs, not the current state:
@@ -176,7 +202,7 @@ function obj:toggleMute()
 	local function showStillState(buttonLabel) showFailure("STILL " .. micState(buttonLabel):upper()) end
 
 	local function sendMuteToggle(teamsApp, previousApp)
-		local btn = findMuteButton(teamsApp)
+		local btn = findMuteButtonCached(self, teamsApp)
 		if not btn then
 			finish(previousApp)
 			showFailure("No active Teams call")
@@ -191,7 +217,8 @@ function obj:toggleMute()
 		-- reads nil), fall back to a fresh lookup.
 		local function resolveButton()
 			if btn.AXDescription or btn.AXTitle then return btn end
-			return findMuteButton(teamsApp)
+			self._muteButton = findMuteButton(teamsApp)
+			return self._muteButton
 		end
 
 		local function currentLabel()
