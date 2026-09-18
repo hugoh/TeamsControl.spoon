@@ -189,6 +189,40 @@ describe("toggleMute when Teams is frontmost", function()
 		assert.are.equal(1, mock_hs._windowElementCalls)
 	end)
 
+	it("reuses the button found by a previous toggle instead of re-walking the AX tree", function()
+		local win = makeWindow("Mute mic")
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		TeamsControl:toggleMute()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+		TeamsControl:toggleMute()
+		muteButtonOf(win).AXDescription = "Mute mic"
+		mock_hs._fireTimers()
+
+		assert.are.equal(1, mock_hs._windowElementCalls)
+		assert.are.equal(2, #mock_hs._keyStrokes)
+		local texts = alertTexts()
+		assert.are.equal("🎤 Teams Unmuted", texts[#texts])
+	end)
+
+	it("re-walks the AX tree on the next toggle when the remembered button went stale", function()
+		local win = makeWindow("Mute mic")
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		TeamsControl:toggleMute()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+		muteButtonOf(win).AXDescription = nil
+		table.insert(
+			win.AXChildren[1].AXChildren,
+			{ AXRole = "AXButton", AXDescription = "Unmute mic", AXChildren = {} }
+		)
+		TeamsControl:toggleMute()
+
+		assert.are.equal(2, mock_hs._windowElementCalls)
+	end)
+
 	it("falls back to a fresh lookup when the cached button ref goes stale", function()
 		local win = makeWindow("Mute mic")
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
