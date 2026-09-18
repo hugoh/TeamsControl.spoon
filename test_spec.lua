@@ -261,6 +261,29 @@ describe("toggleMute when Teams is frontmost", function()
 
 		assert.are.equal(1, #mock_hs._keyStrokes)
 	end)
+
+	it("calls done once the toggle settles", function()
+		local win = makeWindow("Mute mic")
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+		local calls = 0
+
+		TeamsControl:toggleMute(function() calls = calls + 1 end)
+		assert.are.equal(0, calls)
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+
+		assert.are.equal(1, calls)
+	end)
+
+	it("calls done for a re-entrant call that is ignored", function()
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
+		local calls = 0
+
+		TeamsControl:toggleMute()
+		TeamsControl:toggleMute(function() calls = calls + 1 end)
+
+		assert.are.equal(1, calls)
+	end)
 end)
 
 describe("toggleMute when Teams is not frontmost", function()
@@ -300,6 +323,16 @@ describe("toggleMute when Teams is not frontmost", function()
 		local texts = alertTexts()
 		assert.are.equal("🛑 Teams did not activate in time", texts[#texts])
 		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
+	it("calls done exactly once when activation times out", function()
+		mock_hs._frontmost = makeApp("com.other.app")
+		local calls = 0
+
+		TeamsControl:toggleMute(function() calls = calls + 1 end)
+		mock_hs._fireTimers()
+
+		assert.are.equal(1, calls)
 	end)
 end)
 

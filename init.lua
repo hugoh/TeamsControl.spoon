@@ -107,11 +107,22 @@ end
 --- activated first, the toggle is sent, then focus is returned to the app you
 --- were in. Re-entrant calls while a toggle is already in flight are ignored.
 ---
+--- Parameters:
+---  * done - an optional function called once when the toggle has settled (or
+---    the call was ignored), so callers can drive a busy indicator
+---
 --- Returns:
 ---  * The TeamsControl object, for method chaining
-function obj:toggleMute()
+function obj:toggleMute(done)
+	local function notifyDone()
+		local callback = done
+		done = nil
+		if callback then callback() end
+	end
+
 	if self._muteToggleInProgress then
 		self.log.d("Mute toggle already in progress; ignoring")
+		notifyDone()
 		return self
 	end
 	self._muteToggleInProgress = true
@@ -143,6 +154,7 @@ function obj:toggleMute()
 	local deadmanReset = hs.timer.doAfter(self.activationTimeout + 3, function()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
+		notifyDone()
 	end)
 
 	local function finish(previousApp)
@@ -150,6 +162,7 @@ function obj:toggleMute()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
 		if previousApp then previousApp:activate() end
+		notifyDone()
 	end
 
 	-- Button label names the action it performs, not the current state:
