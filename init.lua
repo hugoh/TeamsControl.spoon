@@ -54,6 +54,10 @@ obj._muteButton = nil
 
 local MUTE_LABEL_PATTERN = "ute mic$"
 
+-- Long enough for the progress alert to paint before the AX lookup blocks
+-- Hammerspoon's main thread.
+local ALERT_PAINT_DELAY = 0.04
+
 -- Depth-first search of an accessibility subtree for the first AXButton whose
 -- description/title matches `pattern`. Teams' meeting-control buttons sit
 -- roughly 20 levels deep in its WebView2 accessibility tree.
@@ -269,7 +273,7 @@ function obj:toggleMute(done)
 	end
 
 	if isTeams then
-		sendMuteToggle(currentApp, nil)
+		hs.timer.doAfter(ALERT_PAINT_DELAY, function() sendMuteToggle(currentApp, nil) end)
 		return self
 	end
 
@@ -328,6 +332,9 @@ end
 --- Returns:
 ---  * The TeamsControl object, for method chaining
 function obj:init()
+	-- Hammerspoon loads extensions on first access, which would otherwise add to
+	-- the first toggle's latency.
+	local _ = hs.alert and hs.axuielement and hs.eventtap
 	self.log.f("Loaded %s v%s", self.name, self.version)
 	return self
 end

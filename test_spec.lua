@@ -148,6 +148,41 @@ local function alertTexts()
 	return out
 end
 
+-- Calls toggleMute and runs only the timer it schedules last: the deferral
+-- that lets the progress alert paint before the blocking AX lookup.
+local function toggle(done)
+	local pending = mock_hs.timer._pending
+	local before = #pending
+	TeamsControl:toggleMute(done)
+	if #pending > before then
+		local deferred = table.remove(pending)
+		deferred._fired = true
+		deferred._fn()
+	end
+end
+
+describe("init", function()
+	it("loads the extensions toggleMute uses so the first toggle doesn't pay for it", function()
+		local touched = {}
+		local lazy = { alert = mock_hs.alert, axuielement = mock_hs.axuielement, eventtap = mock_hs.eventtap }
+		for name in pairs(lazy) do
+			mock_hs[name] = nil
+		end
+		setmetatable(mock_hs, {
+			__index = function(_, name)
+				touched[name] = true
+				return lazy[name]
+			end,
+		})
+
+		TeamsControl:init()
+
+		assert.is_true(touched.alert)
+		assert.is_true(touched.axuielement)
+		assert.is_true(touched.eventtap)
+	end)
+end)
+
 describe("configure", function()
 	it("overrides only the provided keys", function()
 		TeamsControl:configure({ activationTimeout = 9, teamsBundleID = "com.example.teams" })
@@ -160,12 +195,22 @@ describe("configure", function()
 end)
 
 describe("toggleMute when Teams is frontmost", function()
+	it("shows the progress alert before walking the AX tree", function()
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
+
+		TeamsControl:toggleMute()
+
+		assert.are.same({ "Toggling Teams mute…" }, alertTexts())
+		assert.are.equal(0, mock_hs._windowElementCalls)
+		assert.are.equal(0, #mock_hs._keyStrokes)
+	end)
+
 	it("sends Cmd+Shift+M and reports the new state once the label flips", function()
 		local win = makeWindow("Mute mic")
 		local teams = makeApp(TeamsControl.teamsBundleID, { win })
 		mock_hs._frontmost = teams
 
-		TeamsControl:toggleMute()
+		toggle()
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
 
@@ -181,7 +226,7 @@ describe("toggleMute when Teams is frontmost", function()
 		local win = makeWindow("Mute mic")
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
 
-		TeamsControl:toggleMute()
+		toggle()
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
 
@@ -193,10 +238,10 @@ describe("toggleMute when Teams is frontmost", function()
 		local win = makeWindow("Mute mic")
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
 
-		TeamsControl:toggleMute()
+		toggle()
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
-		TeamsControl:toggleMute()
+		toggle()
 		muteButtonOf(win).AXDescription = "Mute mic"
 		mock_hs._fireTimers()
 
@@ -210,7 +255,7 @@ describe("toggleMute when Teams is frontmost", function()
 		local win = makeWindow("Mute mic")
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
 
-		TeamsControl:toggleMute()
+		toggle()
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
 		muteButtonOf(win).AXDescription = nil
@@ -218,7 +263,7 @@ describe("toggleMute when Teams is frontmost", function()
 			win.AXChildren[1].AXChildren,
 			{ AXRole = "AXButton", AXDescription = "Unmute mic", AXChildren = {} }
 		)
-		TeamsControl:toggleMute()
+		toggle()
 
 		assert.are.equal(2, mock_hs._windowElementCalls)
 	end)
@@ -227,7 +272,7 @@ describe("toggleMute when Teams is frontmost", function()
 		local win = makeWindow("Mute mic")
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
 
-		TeamsControl:toggleMute()
+		toggle()
 		-- Simulate Teams swapping the node out: old ref reads nil, a new
 		-- button node carries the flipped label.
 		muteButtonOf(win).AXDescription = nil
@@ -246,7 +291,7 @@ describe("toggleMute when Teams is frontmost", function()
 		local teams = makeApp(TeamsControl.teamsBundleID, { makeWindow(nil) })
 		mock_hs._frontmost = teams
 
-		TeamsControl:toggleMute()
+		toggle()
 
 		assert.are.equal(0, #mock_hs._keyStrokes)
 		local texts = alertTexts()
@@ -265,7 +310,7 @@ describe("toggleMute when Teams is frontmost", function()
 			btn.AXDescription = "Unmute mic"
 		end
 
-		TeamsControl:toggleMute()
+		toggle()
 		mock_hs._fireTimers()
 
 		assert.are.same({ { x = 100 + 23, y = 200 + 23 } }, mock_hs._clicks)
@@ -278,7 +323,7 @@ describe("toggleMute when Teams is frontmost", function()
 		local teams = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
 		mock_hs._frontmost = teams
 
-		TeamsControl:toggleMute()
+		toggle()
 		mock_hs._fireTimers()
 
 		local texts = alertTexts()
@@ -290,8 +335,8 @@ describe("toggleMute when Teams is frontmost", function()
 		local teams = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
 		mock_hs._frontmost = teams
 
-		TeamsControl:toggleMute()
-		TeamsControl:toggleMute()
+		toggle()
+		toggle()
 
 		assert.are.equal(1, #mock_hs._keyStrokes)
 	end)
@@ -301,7 +346,7 @@ describe("toggleMute when Teams is frontmost", function()
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
 		local calls = 0
 
-		TeamsControl:toggleMute(function() calls = calls + 1 end)
+		toggle(function() calls = calls + 1 end)
 		assert.are.equal(0, calls)
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
@@ -313,8 +358,8 @@ describe("toggleMute when Teams is frontmost", function()
 		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
 		local calls = 0
 
-		TeamsControl:toggleMute()
-		TeamsControl:toggleMute(function() calls = calls + 1 end)
+		toggle()
+		toggle(function() calls = calls + 1 end)
 
 		assert.are.equal(1, calls)
 	end)
