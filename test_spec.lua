@@ -830,6 +830,18 @@ describe("menu bar indicator", function()
 		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
 	end)
 
+	it("refreshes as soon as a hotkey toggle settles, without waiting for a tick", function()
+		local win = inCall("Mute mic")
+		mock_hs._frontmost = mock_hs._running
+
+		TeamsControl:start()
+		toggle()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
 	it("toggles mute on click and refreshes once the toggle settles", function()
 		local win = inCall("Mute mic")
 		mock_hs._frontmost = mock_hs._running

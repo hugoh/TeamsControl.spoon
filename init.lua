@@ -258,6 +258,7 @@ function obj:toggleMute(done)
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
 		if activatedTeams and previousApp then previousApp:activate() end
+		self:_refreshMenubar()
 		notifyDone()
 	end
 
@@ -464,9 +465,7 @@ local function refreshMenubar(self)
 	-- drops the autosave name, so macOS would forget the item's position.
 	if not self._menubar then
 		self._menubar = hs.menubar.new(true, self.name)
-		self._menubar:setClickCallback(function()
-			self:toggleMute(function() self:_refreshMenubar() end)
-		end)
+		self._menubar:setClickCallback(function() self:toggleMute() end)
 	end
 	self._menubar:setIcon(
 		hs.image.imageFromName(muted and "NSTouchBarAudioInputMuteTemplate" or "NSTouchBarAudioInputTemplate"),
