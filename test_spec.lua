@@ -70,19 +70,19 @@ before_each(function()
 		table.insert(timers, t)
 		return t
 	end
-	-- Fire pending one-shot timers repeatedly (callbacks may schedule more),
-	-- honouring stop(). Capped so a scheduling loop can't hang the suite.
+	-- Fire pending one-shot timers shortest delay first, repeatedly (callbacks
+	-- may schedule more), honouring stop(). Capped so a scheduling loop can't
+	-- hang the suite.
 	mock_hs._fireTimers = function()
 		for _ = 1, 50 do
-			local due
+			local dueIndex
 			for i, t in ipairs(timers) do
-				if not t._stopped and not t._fired then
-					due = t
-					table.remove(timers, i)
-					break
+				if not t._stopped and not t._fired and (not dueIndex or t._delay < timers[dueIndex]._delay) then
+					dueIndex = i
 				end
 			end
-			if not due then return end
+			if not dueIndex then return end
+			local due = table.remove(timers, dueIndex)
 			due._fired = true
 			due._fn()
 		end
@@ -362,6 +362,66 @@ describe("toggleMute when Teams is frontmost", function()
 		toggle(function() calls = calls + 1 end)
 
 		assert.are.equal(1, calls)
+	end)
+end)
+
+describe("toggleMute timer lifetime", function()
+	-- Hammerspoon garbage-collects a running hs.timer that nothing references,
+	-- and it then never fires. These timers are held only weakly, so a timer
+	-- survives a collection only if the Spoon keeps a reference to it.
+	local function weakTimers()
+		local live = setmetatable({}, { __mode = "k" })
+		mock_hs.timer.doAfter = function(delay, fn)
+			local t = { _delay = delay, _fn = fn }
+			function t:stop() self._stopped = true end
+			live[t] = true
+			return t
+		end
+		return function(limit)
+			for _ = 1, limit or 50 do
+				collectgarbage("collect")
+				local due
+				for t in pairs(live) do
+					if not t._stopped and (not due or t._delay < due._delay) then due = t end
+				end
+				if not due then return end
+				live[due] = nil
+				due._fn()
+			end
+		end
+	end
+
+	it("completes a toggle when garbage is collected between steps", function()
+		local fire = weakTimers()
+		local win = makeWindow("Mute mic")
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		TeamsControl:toggleMute()
+		fire(1)
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		fire()
+
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
+		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
+	it("stops a stuck toggle's pending steps once the deadman reset fires", function()
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
+
+		toggle()
+		local deadman, step
+		for _, t in ipairs(mock_hs.timer._pending) do
+			if t._delay == TeamsControl.activationTimeout + 3 then
+				deadman = t
+			else
+				step = t
+			end
+		end
+		deadman._fn()
+
+		assert.is_true(step._stopped)
+		assert.is_false(TeamsControl._muteToggleInProgress)
 	end)
 end)
 
