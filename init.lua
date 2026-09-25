@@ -32,35 +32,52 @@ obj.teamsBundleID = "com.microsoft.teams2"
 
 --- TeamsControl.activationTimeout
 --- Variable
---- Seconds to wait for Teams to come to the front before giving up (default: 5).
+--- Seconds to wait for Teams to come to the front for the click fallback
+--- before giving up (default: 5).
 obj.activationTimeout = 5
 
 --- TeamsControl.clickSettleDelay
 --- Variable
---- Seconds between accessibility re-checks after sending the mute keystroke (default: 0.15).
-obj.clickSettleDelay = 0.15
+--- Seconds between accessibility re-checks after sending the mute keystroke (default: 0.05).
+obj.clickSettleDelay = 0.05
 
 --- TeamsControl.clickSettleMaxRetries
 --- Variable
 --- How many times to re-check the button label -- after the keystroke, and again after the
---- click fallback -- before declaring the toggle failed (default: 3).
-obj.clickSettleMaxRetries = 3
+--- click fallback -- before declaring the toggle failed (default: 10).
+obj.clickSettleMaxRetries = 10
+
+--- TeamsControl.showMenubar
+--- Variable
+--- Show a menu bar indicator during Teams calls: the macOS mic glyph when
+--- unmuted, the slashed mic when muted, nothing otherwise. Clicking it toggles
+--- mute (default: true).
+obj.showMenubar = true
+
+--- TeamsControl.menubarStatusDot
+--- Variable
+--- Show a 🟢 (unmuted) or 🟡 (muted) dot next to the menu bar icon (default: true).
+obj.menubarStatusDot = true
+
+--- TeamsControl.menubarPollInterval
+--- Variable
+--- Seconds between menu bar indicator refreshes (default: 1).
+obj.menubarPollInterval = 1
 
 obj.log = hs.logger.new("TeamsControl", "info")
 
 obj._muteToggleInProgress = false
-obj._hotkeys = nil
-obj._muteButton = nil
--- Hammerspoon garbage-collects a running hs.timer that nothing references, so
--- an in-flight toggle's timers are kept here.
-obj._deadman = nil
-obj._stepTimer = nil
+obj._nextMenubarWalk = 0
 
 local MUTE_LABEL_PATTERN = "ute mic$"
 
 -- Long enough for the progress alert to paint before the AX lookup blocks
 -- Hammerspoon's main thread.
 local ALERT_PAINT_DELAY = 0.04
+
+-- The mic can be open with no mute button to find (Teams' pre-join screen,
+-- another app's call), so a walk that found nothing isn't retried every tick.
+local MENUBAR_MISSED_WALK_BACKOFF = 5
 
 -- Depth-first search of an accessibility subtree for the first AXButton whose
 -- description/title matches `pattern`. Teams' meeting-control buttons sit
@@ -86,29 +103,73 @@ local function findButton(element, pattern, depth)
 end
 
 -- The mute button ("Mute mic" / "Unmute mic") exists only while a call is
--- active, so its presence doubles as the "in a call" check.
+-- active, so its presence doubles as the "in a call" check. Teams' main
+-- meeting window stops updating while Teams is in the background, but the
+-- floating compact view (a non-standard window) stays live, so it's searched
+-- first.
 local function findMuteButton(teamsApp)
-	for _, win in ipairs(teamsApp:allWindows()) do
-		local btn = findButton(hs.axuielement.windowElement(win), MUTE_LABEL_PATTERN)
-		if btn then return btn end
+	local windows = teamsApp:allWindows()
+	for _, standard in ipairs({ false, true }) do
+		for _, win in ipairs(windows) do
+			if win:isStandard() == standard then
+				local btn = findButton(hs.axuielement.windowElement(win), MUTE_LABEL_PATTERN)
+				if btn then return btn end
+			end
+		end
 	end
 	return nil
 end
 
+-- Changes when the compact view opens or closes, which can make a cached
+-- button that still reads a valid label the frozen one.
+local function windowSetKey(teamsApp)
+	local ids = {}
+	for _, win in ipairs(teamsApp:allWindows()) do
+		table.insert(ids, tostring(win:id()))
+	end
+	table.sort(ids)
+	return table.concat(ids, ",")
+end
+
+-- A ref that went stale reads a nil label.
+local function muteLabelOf(button)
+	local label = button and (button.AXDescription or button.AXTitle)
+	if type(label) == "string" and label:match(MUTE_LABEL_PATTERN) then return label end
+	return nil
+end
+
+local function validCachedMuteButton(self, teamsApp)
+	local windows = windowSetKey(teamsApp)
+	if windows == self._muteButtonWindows and muteLabelOf(self._muteButton) then return self._muteButton end
+	return nil, windows
+end
+
 -- Walking Teams' AX tree blocks Hammerspoon for ~0.5-1s, so the button found
--- by one toggle is reused by the next. A ref that went stale reads a nil label.
+-- by one lookup is reused by the next.
 local function findMuteButtonCached(self, teamsApp)
-	local remembered = self._muteButton
-	local label = remembered and (remembered.AXDescription or remembered.AXTitle)
-	if type(label) == "string" and label:match(MUTE_LABEL_PATTERN) then return remembered end
+	local cached, windows = validCachedMuteButton(self, teamsApp)
+	if cached then return cached end
 	self._muteButton = findMuteButton(teamsApp)
+	self._muteButtonWindows = windows
+	self.log.df("Walked Teams AX tree for mute button: %s", self._muteButton and "found" or "not found")
 	return self._muteButton
+end
+
+-- Teams keeps the mic open while muted, so an open mic is a cheap "maybe in a
+-- call" gate in front of the AX lookup. Any input counts: Teams may not use
+-- the system default.
+local function anyMicInUse()
+	for _, device in ipairs(hs.audiodevice.allInputDevices()) do
+		if device:inUse() then return true end
+	end
+	return false
 end
 
 --- TeamsControl:configure(opts)
 --- Method
 --- Sets one or more of TeamsControl's variables (`teamsBundleID`,
---- `activationTimeout`, `clickSettleDelay`, `clickSettleMaxRetries`) from a table.
+--- `activationTimeout`, `clickSettleDelay`, `clickSettleMaxRetries`,
+--- `showMenubar`, `menubarStatusDot`, `menubarPollInterval`) from a table. Call it before `start()`.
 ---
 --- Parameters:
 ---  * opts - a table with any of the variable names above as keys
@@ -116,7 +177,15 @@ end
 --- Returns:
 ---  * The TeamsControl object, for method chaining
 function obj:configure(opts)
-	for _, key in ipairs({ "teamsBundleID", "activationTimeout", "clickSettleDelay", "clickSettleMaxRetries" }) do
+	for _, key in ipairs({
+		"teamsBundleID",
+		"activationTimeout",
+		"clickSettleDelay",
+		"clickSettleMaxRetries",
+		"showMenubar",
+		"menubarStatusDot",
+		"menubarPollInterval",
+	}) do
 		if opts[key] ~= nil then self[key] = opts[key] end
 	end
 	return self
@@ -124,9 +193,10 @@ end
 
 --- TeamsControl:toggleMute()
 --- Method
---- Toggles the Teams meeting microphone. If Teams is not frontmost it is
---- activated first, the toggle is sent, then focus is returned to the app you
---- were in. Re-entrant calls while a toggle is already in flight are ignored.
+--- Toggles the Teams meeting microphone by sending Cmd+Shift+M to Teams
+--- without bringing it forward. If that doesn't register, Teams is activated,
+--- its mute button clicked, and focus returned to the app you were in.
+--- Re-entrant calls while a toggle is already in flight are ignored.
 ---
 --- Parameters:
 ---  * done - an optional function called once when the toggle has settled (or
@@ -148,8 +218,9 @@ function obj:toggleMute(done)
 	end
 	self._muteToggleInProgress = true
 
-	local currentApp = hs.application.frontmostApplication()
-	local isTeams = currentApp and currentApp:bundleID() == self.teamsBundleID
+	local teamsApp = hs.application.get(self.teamsBundleID)
+	local previousApp = hs.application.frontmostApplication()
+	local activatedTeams = false
 
 	local progressIndicator
 
@@ -167,25 +238,27 @@ function obj:toggleMute(done)
 		progressIndicator = hs.alert.show(text, self.activationTimeout + 3)
 	end
 
-	updateProgress(isTeams and "Toggling Teams mute…" or "Activating Teams…")
+	updateProgress("Toggling Teams mute…")
 
-	-- If any step below throws before finish() runs (AX traversal, keyStroke,
-	-- an app that never activates), _muteToggleInProgress would stay true and
-	-- every later hotkey press would silently early-return. This clears it.
+	-- Hammerspoon garbage-collects a running hs.timer that nothing references, so
+	-- an in-flight toggle's timers and watcher are kept on self.
 	local function after(delay, fn) self._stepTimer = hs.timer.doAfter(delay, fn) end
 
-	self._deadman = hs.timer.doAfter(self.activationTimeout + 3, function()
-		if self._stepTimer then self._stepTimer:stop() end
-		self._muteToggleInProgress = false
-		withdrawProgressIndicator()
-		notifyDone()
-	end)
+	local function stopWaitingForActivation()
+		if self._activationWatcher then self._activationWatcher:stop() end
+		if self._activationTimer then self._activationTimer:stop() end
+		self._activationWatcher = nil
+		self._activationTimer = nil
+	end
 
-	local function finish(previousApp)
+	local function finish()
 		self._deadman:stop()
+		if self._stepTimer then self._stepTimer:stop() end
+		stopWaitingForActivation()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
-		if previousApp then previousApp:activate() end
+		if activatedTeams and previousApp then previousApp:activate() end
+		self:_refreshMenubar()
 		notifyDone()
 	end
 
@@ -212,30 +285,63 @@ function obj:toggleMute(done)
 
 	local function showStillState(buttonLabel) showFailure("STILL " .. micState(buttonLabel):upper()) end
 
-	local function sendMuteToggle(teamsApp, previousApp)
+	-- If any step below throws before finish() runs (AX traversal, keyStroke,
+	-- an app that never activates), _muteToggleInProgress would stay true and
+	-- every later hotkey press would silently early-return. This clears it.
+	self._deadman = hs.timer.doAfter(self.activationTimeout + 3, function()
+		finish()
+		showFailure("Mute toggle timed out")
+	end)
+
+	if not teamsApp then
+		finish()
+		showFailure("No active Teams call")
+		return self
+	end
+
+	-- A synthetic click lands on whatever is on screen, so unlike the
+	-- keystroke it needs Teams in front.
+	local function withTeamsFrontmost(fn)
+		local front = hs.application.frontmostApplication()
+		if front and front:bundleID() == self.teamsBundleID then return fn() end
+
+		self._activationWatcher = hs.application.watcher.new(function(_, eventType, appObject)
+			if eventType ~= hs.application.watcher.activated or appObject:bundleID() ~= self.teamsBundleID then
+				return
+			end
+			stopWaitingForActivation()
+			activatedTeams = true
+			fn()
+		end)
+		self._activationWatcher:start()
+		self._activationTimer = hs.timer.doAfter(self.activationTimeout, function()
+			finish()
+			showFailure("Teams did not activate in time")
+		end)
+		hs.application.launchOrFocusByBundleID(self.teamsBundleID)
+	end
+
+	local function sendMuteToggle()
 		local btn = findMuteButtonCached(self, teamsApp)
 		if not btn then
-			finish(previousApp)
+			finish()
 			showFailure("No active Teams call")
 			return
 		end
 
-		local beforeLabel = btn.AXDescription or btn.AXTitle
+		local beforeLabel = muteLabelOf(btn)
 		hs.eventtap.keyStroke({ "cmd", "shift" }, "m", 0, teamsApp)
 
 		-- Re-reading the cached button element avoids re-walking Teams' deep AX
 		-- tree on every retry. If the toggle swapped the node out (the stale ref
 		-- reads nil), fall back to a fresh lookup.
 		local function resolveButton()
-			if btn.AXDescription or btn.AXTitle then return btn end
-			self._muteButton = findMuteButton(teamsApp)
-			return self._muteButton
+			if muteLabelOf(btn) then return btn end
+			btn = findMuteButtonCached(self, teamsApp)
+			return btn
 		end
 
-		local function currentLabel()
-			local resolved = resolveButton()
-			return resolved and (resolved.AXDescription or resolved.AXTitle)
-		end
+		local function currentLabel() return muteLabelOf(resolveButton()) end
 
 		-- The keystroke can land on a focused text field (e.g. the Notes panel)
 		-- instead of Teams' mute shortcut handler. AXPress on the button is a
@@ -254,20 +360,33 @@ function obj:toggleMute(done)
 
 		-- Two phases, each with its own clickSettleMaxRetries budget: poll after the
 		-- keystroke, and if that never registers, click the button and poll again.
+		local function settled(label)
+			if not (label and label ~= beforeLabel) then return false end
+			finish()
+			showSuccess(label)
+			return true
+		end
+
 		local function checkResult(phase, attempt)
 			local afterLabel = currentLabel()
 
-			if afterLabel and afterLabel ~= beforeLabel then
-				finish(previousApp)
-				showSuccess(afterLabel)
+			if settled(afterLabel) then
+				return
 			elseif attempt < self.clickSettleMaxRetries then
 				after(self.clickSettleDelay, function() checkResult(phase, attempt + 1) end)
 			elseif phase == "keystroke" then
-				clickButton()
 				updateProgress("Retrying Teams mute toggle…")
-				after(self.clickSettleDelay, function() checkResult("click", 1) end)
+				-- A frozen main-window label can hide a keystroke that worked, and
+				-- it catches up once Teams is in front: clicking then would undo it.
+				withTeamsFrontmost(function()
+					after(self.clickSettleDelay, function()
+						if settled(currentLabel()) then return end
+						clickButton()
+						after(self.clickSettleDelay, function() checkResult("click", 1) end)
+					end)
+				end)
 			else
-				finish(previousApp)
+				finish()
 				if afterLabel then
 					showStillState(afterLabel)
 				else
@@ -279,33 +398,13 @@ function obj:toggleMute(done)
 		after(self.clickSettleDelay, function() checkResult("keystroke", 1) end)
 	end
 
-	if isTeams then
-		after(ALERT_PAINT_DELAY, function() sendMuteToggle(currentApp, nil) end)
-		return self
+	-- Only a cache miss walks the AX tree, the one step that blocks long enough
+	-- to need the progress alert painted first.
+	if validCachedMuteButton(self, teamsApp) then
+		sendMuteToggle()
+	else
+		after(ALERT_PAINT_DELAY, sendMuteToggle)
 	end
-
-	local activated = false
-	local timeoutTimer
-
-	local watcher
-	watcher = hs.application.watcher.new(function(_, eventType, appObject)
-		if eventType ~= hs.application.watcher.activated or appObject:bundleID() ~= self.teamsBundleID then return end
-		activated = true
-		watcher:stop()
-		if timeoutTimer then timeoutTimer:stop() end
-		updateProgress("Toggling Teams mute…")
-		sendMuteToggle(appObject, currentApp)
-	end)
-	watcher:start()
-
-	timeoutTimer = hs.timer.doAfter(self.activationTimeout, function()
-		watcher:stop()
-		if activated then return end
-		finish(nil)
-		showFailure("Teams did not activate in time")
-	end)
-
-	hs.application.launchOrFocusByBundleID(self.teamsBundleID)
 	return self
 end
 
@@ -332,6 +431,74 @@ function obj:bindHotkeys(mapping)
 	return self
 end
 
+-- Only walks the AX tree when the cached button went stale mid-call, or at
+-- most every MENUBAR_MISSED_WALK_BACKOFF seconds while no button is found.
+-- Returns the mute button label, or nil plus why there isn't one.
+function obj:_currentMuteLabel()
+	local teams = hs.application.get(self.teamsBundleID)
+	if not teams then return nil, "Teams not running" end
+	if not anyMicInUse() then return nil, "no mic in use" end
+
+	local now = hs.timer.secondsSinceEpoch()
+	if not self._muteButton and now < self._nextMenubarWalk and windowSetKey(teams) == self._muteButtonWindows then
+		return nil, "no mute button found"
+	end
+	local label = muteLabelOf(findMuteButtonCached(self, teams))
+	if not self._muteButton then self._nextMenubarWalk = now + MENUBAR_MISSED_WALK_BACKOFF end
+	return label, not label and "no mute button found" or nil
+end
+
+local function refreshMenubar(self)
+	local label, reason = self:_currentMuteLabel()
+	local muted = label and label:match("^Unmute")
+	local state = not label and ("hidden: " .. reason) or muted and "muted" or "unmuted"
+	if state ~= self._menubarState then
+		self.log.f("Menu bar indicator: %s", state)
+		self._menubarState = state
+	end
+	if not label then
+		if self._menubar then self._menubar:delete() end
+		self._menubar = nil
+		return
+	end
+	-- Created visible and named rather than hidden and re-shown: returnToMenuBar()
+	-- drops the autosave name, so macOS would forget the item's position.
+	if not self._menubar then
+		self._menubar = hs.menubar.new(true, self.name)
+		self._menubar:setClickCallback(function() self:toggleMute() end)
+	end
+	self._menubar:setIcon(
+		hs.image.imageFromName(muted and "NSTouchBarAudioInputMuteTemplate" or "NSTouchBarAudioInputTemplate"),
+		true
+	)
+	if self.menubarStatusDot then self._menubar:setTitle(muted and "🟡" or "🟢") end
+end
+
+-- A no-op once stopped, so a click's toggle settling late can't resurrect the
+-- item. AX reads can throw while Teams re-renders, and hs.timer stops a
+-- repeating timer whose callback throws.
+function obj:_refreshMenubar()
+	if not self._menubarTimer then return end
+	local ok, err = xpcall(refreshMenubar, debug.traceback, self)
+	if not ok then self.log.e("Menu bar refresh failed: " .. tostring(err)) end
+end
+
+function obj:_startMenubar()
+	self:_stopMenubar()
+	self._menubarTimer = hs.timer.doEvery(self.menubarPollInterval, function() self:_refreshMenubar() end)
+	self:_refreshMenubar()
+	return self
+end
+
+function obj:_stopMenubar()
+	if self._menubarTimer then self._menubarTimer:stop() end
+	if self._menubar then self._menubar:delete() end
+	self._menubarTimer = nil
+	self._menubar = nil
+	self._menubarState = nil
+	return self
+end
+
 --- TeamsControl:init()
 --- Method
 --- Called automatically by `hs.loadSpoon()`. Logs the loaded version.
@@ -346,9 +513,20 @@ function obj:init()
 	return self
 end
 
+--- TeamsControl:start()
+--- Method
+--- Starts the menu bar indicator, if `showMenubar` is set.
+---
+--- Returns:
+---  * The TeamsControl object, for method chaining
+function obj:start()
+	if self.showMenubar then self:_startMenubar() end
+	return self
+end
+
 --- TeamsControl:stop()
 --- Method
---- Unbinds any hotkeys bound via `bindHotkeys`.
+--- Unbinds any hotkeys bound via `bindHotkeys` and stops the menu bar indicator.
 ---
 --- Returns:
 ---  * The TeamsControl object, for method chaining
@@ -359,7 +537,7 @@ function obj:stop()
 		end
 		self._hotkeys = nil
 	end
-	return self
+	return self:_stopMenubar()
 end
 
 return obj
