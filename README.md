@@ -11,6 +11,7 @@ A Hammerspoon Spoon that toggles the Microsoft Teams meeting microphone from a s
 
 - One hotkey toggles mute from anywhere: if Teams isn't frontmost it's activated, the toggle is sent, then focus returns to the app you were in
 - Sends `Cmd+Shift+M`, then confirms the toggle.
+- Optional menu bar indicator showing whether you're muted during a call; click it to toggle
 - On-screen alert for the result: `🔶 Teams Muted` / `🎤 Teams Unmuted` on success, or a `🛑` alert (`No active Teams call`, `Teams did not activate in time`, `Mute toggle did not register`, `STILL MUTED`/`STILL UNMUTED`) on failure
 
 ## Installation
@@ -56,6 +57,19 @@ local teamsControl = hs.loadSpoon("TeamsControl")
 hs.hotkey.bind({ "ctrl", "alt", "cmd" }, "m", function() teamsControl:toggleMute() end)
 ```
 
+A menu bar indicator shows during Teams calls (the macOS mic glyph when
+unmuted, the slashed mic when muted, hidden otherwise) and toggles mute when
+clicked. It only looks for Teams' mute button while some microphone is in use,
+then re-reads that button every `menubarPollInterval` seconds (default 1), so it
+also picks up mute changes made in Teams itself. It starts with `start()`:
+
+```lua
+hs.loadSpoon("TeamsControl"):start()
+```
+
+Leave it off with `configure({ showMenubar = false })`; `stop()` removes it
+and unbinds the hotkeys.
+
 `toggleMute()` accepts an optional callback, invoked once the toggle has settled
 (or the call was ignored as re-entrant), for driving a busy indicator.
 
@@ -67,6 +81,8 @@ hs.loadSpoon("TeamsControl"):configure({
   activationTimeout = 5,                    -- seconds to wait for Teams to come to the front
   clickSettleDelay = 0.15,                  -- seconds between accessibility re-checks after the keystroke
   clickSettleMaxRetries = 5,               -- re-checks before declaring the toggle failed
+  showMenubar = true,                       -- show the in-call mute indicator in the menu bar
+  menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes
 }):bindHotkeys({ toggleMute = { { "ctrl", "alt", "cmd" }, "m" } })
 ```
 

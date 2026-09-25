@@ -126,6 +126,46 @@ before_each(function()
 		return w
 	end
 
+	mock_hs._now = 0
+	mock_hs.timer.secondsSinceEpoch = function() return mock_hs._now end
+	mock_hs.timer.doEvery = function(interval, fn)
+		local t = { _interval = interval, _fn = fn, _stopped = false }
+		function t:stop() self._stopped = true end
+		mock_hs._everyTimer = t
+		return t
+	end
+
+	mock_hs._running = nil
+	mock_hs.application.get = function(bid)
+		if mock_hs._running and mock_hs._running:bundleID() == bid then return mock_hs._running end
+	end
+
+	mock_hs._micInUse = false
+	mock_hs.audiodevice = {
+		allInputDevices = function()
+			return {
+				{ inUse = function() return false end },
+				{ inUse = function() return mock_hs._micInUse end },
+			}
+		end,
+	}
+
+	mock_hs.image = { imageFromName = function(name) return { _name = name } end }
+
+	mock_hs.menubar = {
+		new = function(inMenuBar, autosaveName)
+			local m = { _inMenuBar = inMenuBar, _autosaveName = autosaveName, _deleted = false }
+			function m:setIcon(image, template)
+				self._icon = image
+				self._template = template
+			end
+			function m:setClickCallback(fn) self._click = fn end
+			function m:delete() self._deleted = true end
+			mock_hs._menubar = m
+			return m
+		end,
+	}
+
 	mock_hs.hotkey = {
 		bind = function(mods, key, fn)
 			local hk = { _mods = mods, _key = key, _fn = fn, _deleted = false }
@@ -285,6 +325,23 @@ describe("toggleMute when Teams is frontmost", function()
 		local texts = alertTexts()
 		assert.are.equal("🔶 Teams Muted", texts[#texts])
 		assert.is_true(mock_hs._windowElementCalls > 1)
+	end)
+
+	it("treats a swapped-out button as stale even though Teams reports an empty AXTitle", function()
+		local win = makeWindow("Mute mic")
+		muteButtonOf(win).AXTitle = ""
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		toggle()
+		muteButtonOf(win).AXDescription = nil
+		table.insert(
+			win.AXChildren[1].AXChildren,
+			{ AXRole = "AXButton", AXDescription = "Unmute mic", AXTitle = "", AXChildren = {} }
+		)
+		mock_hs._fireTimers()
+
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
 	end)
 
 	it("reports 'No active Teams call' when the mute button is absent", function()
@@ -489,5 +546,234 @@ describe("bindHotkeys", function()
 	it("warns on an unknown action", function()
 		TeamsControl:bindHotkeys({ bogus = { {}, "x" } })
 		assert.is_truthy(#TeamsControl.log._warnings > 0)
+	end)
+end)
+
+describe("menu bar indicator", function()
+	local function tick() mock_hs._everyTimer._fn() end
+
+	local function inCall(label)
+		local win = makeWindow(label)
+		mock_hs._running = makeApp(TeamsControl.teamsBundleID, { win })
+		mock_hs._micInUse = true
+		return win
+	end
+
+	it("creates the item already in the menu bar and named, so macOS restores its position", function()
+		inCall("Mute mic")
+
+		TeamsControl:start()
+
+		assert.is_true(mock_hs._menubar._inMenuBar)
+		assert.are.equal("TeamsControl", mock_hs._menubar._autosaveName)
+	end)
+
+	it("stays hidden when Teams isn't running", function()
+		mock_hs._micInUse = true
+
+		TeamsControl:start()
+
+		assert.is_nil(mock_hs._menubar)
+	end)
+
+	it("stays hidden without walking the AX tree when no mic is in use", function()
+		inCall("Mute mic")
+		mock_hs._micInUse = false
+
+		TeamsControl:start()
+
+		assert.is_nil(mock_hs._menubar)
+		assert.are.equal(0, mock_hs._windowElementCalls)
+	end)
+
+	it("shows the mic icon when in a call and unmuted", function()
+		inCall("Mute mic")
+
+		TeamsControl:start()
+
+		assert.is_true(mock_hs._menubar._template)
+		assert.are.equal("NSTouchBarAudioInputTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("shows the muted icon when in a call and muted", function()
+		inCall("Unmute mic")
+
+		TeamsControl:start()
+
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("follows a mute toggled in Teams by re-reading the cached button", function()
+		local win = inCall("Mute mic")
+
+		TeamsControl:start()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		tick()
+
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+		assert.are.equal(1, mock_hs._windowElementCalls)
+	end)
+
+	it("removes the item once the mic is released", function()
+		inCall("Mute mic")
+
+		TeamsControl:start()
+		local bar = mock_hs._menubar
+		mock_hs._micInUse = false
+		tick()
+
+		assert.is_true(bar._deleted)
+		assert.is_nil(TeamsControl._menubar)
+	end)
+
+	it("reuses the item across refreshes while the call lasts", function()
+		inCall("Mute mic")
+
+		TeamsControl:start()
+		local bar = mock_hs._menubar
+		tick()
+
+		assert.are.equal(bar, mock_hs._menubar)
+		assert.is_false(bar._deleted)
+	end)
+
+	it("rate-limits AX walks while the mic is in use but no mute button exists", function()
+		local win = inCall(nil)
+
+		TeamsControl:start()
+		tick()
+		assert.are.equal(1, mock_hs._windowElementCalls)
+
+		table.insert(win.AXChildren[1].AXChildren, { AXRole = "AXButton", AXDescription = "Mute mic", AXChildren = {} })
+		mock_hs._now = 5
+		tick()
+
+		assert.are.equal(2, mock_hs._windowElementCalls)
+		assert.are.equal("NSTouchBarAudioInputTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("re-walks right away when the cached button went stale", function()
+		local win = inCall("Mute mic")
+
+		TeamsControl:start()
+		muteButtonOf(win).AXDescription = nil
+		table.insert(
+			win.AXChildren[1].AXChildren,
+			{ AXRole = "AXButton", AXDescription = "Unmute mic", AXChildren = {} }
+		)
+		tick()
+
+		assert.are.equal(2, mock_hs._windowElementCalls)
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("toggles mute on click and refreshes once the toggle settles", function()
+		local win = inCall("Mute mic")
+		mock_hs._frontmost = mock_hs._running
+
+		TeamsControl:start()
+		mock_hs._menubar._click()
+		table.remove(mock_hs.timer._pending)._fn()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+
+		assert.are.equal(1, #mock_hs._keyStrokes)
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("logs each state change once, with the reason when hidden", function()
+		inCall("Mute mic")
+		mock_hs._micInUse = false
+
+		TeamsControl:start()
+		tick()
+		mock_hs._micInUse = true
+		tick()
+
+		local transitions = {}
+		for _, line in ipairs(TeamsControl.log._infos) do
+			if line:match("^Menu bar") then table.insert(transitions, line) end
+		end
+		assert.are.same({
+			"Menu bar indicator: hidden: no mic in use",
+			"Menu bar indicator: unmuted",
+		}, transitions)
+	end)
+
+	it("logs a failing refresh instead of letting it stop the poll timer", function()
+		TeamsControl:start()
+		mock_hs.application.get = function() error("AX element went away") end
+
+		assert.has_no.errors(tick)
+		assert.are.equal(1, #TeamsControl.log._errors)
+		assert.is_truthy(TeamsControl.log._errors[1]:match("AX element went away"))
+	end)
+
+	it("restarts at a new menubarPollInterval", function()
+		TeamsControl:start()
+		TeamsControl:configure({ menubarPollInterval = 0.5 })
+
+		assert.are.equal(0.5, mock_hs._everyTimer._interval)
+	end)
+
+	it("isn't started by init()", function()
+		inCall("Mute mic")
+
+		TeamsControl:init()
+
+		assert.is_nil(mock_hs._everyTimer)
+	end)
+
+	it("configure() before start() doesn't start it", function()
+		inCall("Mute mic")
+
+		TeamsControl:configure({ showMenubar = true })
+
+		assert.is_nil(mock_hs._everyTimer)
+	end)
+
+	it("start() returns self for chaining", function() assert.are.equal(TeamsControl, TeamsControl:start()) end)
+
+	it("doesn't start when showMenubar is false", function()
+		TeamsControl.showMenubar = false
+		inCall("Mute mic")
+
+		TeamsControl:start()
+
+		assert.is_nil(mock_hs._everyTimer)
+		assert.is_nil(mock_hs._menubar)
+	end)
+
+	it("configure({ showMenubar = false }) tears down a running indicator", function()
+		inCall("Mute mic")
+		TeamsControl:start()
+		local bar, timer = mock_hs._menubar, mock_hs._everyTimer
+
+		TeamsControl:configure({ showMenubar = false })
+
+		assert.is_true(bar._deleted)
+		assert.is_true(timer._stopped)
+	end)
+
+	it("configure({ showMenubar = true }) starts it", function()
+		TeamsControl.showMenubar = false
+		TeamsControl:start()
+		inCall("Mute mic")
+
+		TeamsControl:configure({ showMenubar = true })
+
+		assert.is_truthy(mock_hs._menubar)
+	end)
+
+	it("stop() tears it down", function()
+		inCall("Mute mic")
+		TeamsControl:start()
+		local bar, timer = mock_hs._menubar, mock_hs._everyTimer
+
+		TeamsControl:stop()
+
+		assert.is_true(bar._deleted)
+		assert.is_true(timer._stopped)
+		assert.is_nil(TeamsControl._menubar)
 	end)
 end)
