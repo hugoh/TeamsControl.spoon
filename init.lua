@@ -51,6 +51,10 @@ obj.log = hs.logger.new("TeamsControl", "info")
 obj._muteToggleInProgress = false
 obj._hotkeys = nil
 obj._muteButton = nil
+-- Hammerspoon garbage-collects a running hs.timer that nothing references, so
+-- an in-flight toggle's timers are kept here.
+obj._deadman = nil
+obj._stepTimer = nil
 
 local MUTE_LABEL_PATTERN = "ute mic$"
 
@@ -168,14 +172,17 @@ function obj:toggleMute(done)
 	-- If any step below throws before finish() runs (AX traversal, keyStroke,
 	-- an app that never activates), _muteToggleInProgress would stay true and
 	-- every later hotkey press would silently early-return. This clears it.
-	local deadmanReset = hs.timer.doAfter(self.activationTimeout + 3, function()
+	local function after(delay, fn) self._stepTimer = hs.timer.doAfter(delay, fn) end
+
+	self._deadman = hs.timer.doAfter(self.activationTimeout + 3, function()
+		if self._stepTimer then self._stepTimer:stop() end
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
 		notifyDone()
 	end)
 
 	local function finish(previousApp)
-		deadmanReset:stop()
+		self._deadman:stop()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
 		if previousApp then previousApp:activate() end
@@ -254,11 +261,11 @@ function obj:toggleMute(done)
 				finish(previousApp)
 				showSuccess(afterLabel)
 			elseif attempt < self.clickSettleMaxRetries then
-				hs.timer.doAfter(self.clickSettleDelay, function() checkResult(phase, attempt + 1) end)
+				after(self.clickSettleDelay, function() checkResult(phase, attempt + 1) end)
 			elseif phase == "keystroke" then
 				clickButton()
 				updateProgress("Retrying Teams mute toggle…")
-				hs.timer.doAfter(self.clickSettleDelay, function() checkResult("click", 1) end)
+				after(self.clickSettleDelay, function() checkResult("click", 1) end)
 			else
 				finish(previousApp)
 				if afterLabel then
@@ -269,11 +276,11 @@ function obj:toggleMute(done)
 			end
 		end
 
-		hs.timer.doAfter(self.clickSettleDelay, function() checkResult("keystroke", 1) end)
+		after(self.clickSettleDelay, function() checkResult("keystroke", 1) end)
 	end
 
 	if isTeams then
-		hs.timer.doAfter(ALERT_PAINT_DELAY, function() sendMuteToggle(currentApp, nil) end)
+		after(ALERT_PAINT_DELAY, function() sendMuteToggle(currentApp, nil) end)
 		return self
 	end
 
