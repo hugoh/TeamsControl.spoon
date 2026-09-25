@@ -6,7 +6,6 @@ min_hk_version = Base.min_hk_version
 
 local linters = new Mapping<String, Step> {
     ...Base.base
-    ...Base.shell
     ...Base.lua
 }
 

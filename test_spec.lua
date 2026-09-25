@@ -218,7 +218,7 @@ local function toggle(done)
 	if #pending > before then
 		local deferred = table.remove(pending)
 		deferred._fired = true
-		deferred._fn()
+		if not deferred._stopped then deferred._fn() end
 	end
 end
 
@@ -568,6 +568,32 @@ describe("toggleMute when Teams is not frontmost", function()
 		assert.is_false(TeamsControl._muteToggleInProgress)
 	end)
 
+	it("skips the click when the label catches up once Teams is in front", function()
+		exhaustKeystroke()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._frontmost = teams
+		mock_hs._watcher._fn(nil, "activated", teams)
+		mock_hs._fireTimers()
+
+		assert.are.equal(0, #mock_hs._clicks)
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
+	end)
+
+	it("restores focus and reports a timeout when the deadman fires mid-fallback", function()
+		exhaustKeystroke()
+		mock_hs._frontmost = teams
+		mock_hs._watcher._fn(nil, "activated", teams)
+		for _, t in ipairs(mock_hs.timer._pending) do
+			if t._delay == TeamsControl.activationTimeout + 3 then t._fn() end
+		end
+
+		assert.are.equal(1, other._activated)
+		local texts = alertTexts()
+		assert.are.equal("🛑 Mute toggle timed out", texts[#texts])
+		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
 	it("keeps the activation watcher referenced so it can't be garbage-collected", function()
 		exhaustKeystroke()
 
@@ -805,6 +831,28 @@ describe("menu bar indicator", function()
 		}, transitions)
 	end)
 
+	it("doesn't bring the item back when a click's toggle settles after stop()", function()
+		local win = inCall("Mute mic")
+		mock_hs._frontmost = mock_hs._running
+
+		TeamsControl:start()
+		mock_hs._menubar._click()
+		table.remove(mock_hs.timer._pending)._fn()
+		TeamsControl:stop()
+		mock_hs._menubar = nil
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+
+		assert.is_nil(mock_hs._menubar)
+	end)
+
+	it("start() survives an AX read that throws", function()
+		mock_hs.application.get = function() error("AX element went away") end
+
+		assert.has_no.errors(function() TeamsControl:start() end)
+		assert.are.equal(1, #TeamsControl.log._errors)
+	end)
+
 	it("logs a failing refresh instead of letting it stop the poll timer", function()
 		TeamsControl:start()
 		mock_hs.application.get = function() error("AX element went away") end
@@ -814,9 +862,8 @@ describe("menu bar indicator", function()
 		assert.is_truthy(TeamsControl.log._errors[1]:match("AX element went away"))
 	end)
 
-	it("restarts at a new menubarPollInterval", function()
-		TeamsControl:start()
-		TeamsControl:configure({ menubarPollInterval = 0.5 })
+	it("polls at menubarPollInterval", function()
+		TeamsControl:configure({ menubarPollInterval = 0.5 }):start()
 
 		assert.are.equal(0.5, mock_hs._everyTimer._interval)
 	end)
@@ -825,14 +872,6 @@ describe("menu bar indicator", function()
 		inCall("Mute mic")
 
 		TeamsControl:init()
-
-		assert.is_nil(mock_hs._everyTimer)
-	end)
-
-	it("configure() before start() doesn't start it", function()
-		inCall("Mute mic")
-
-		TeamsControl:configure({ showMenubar = true })
 
 		assert.is_nil(mock_hs._everyTimer)
 	end)
@@ -847,27 +886,6 @@ describe("menu bar indicator", function()
 
 		assert.is_nil(mock_hs._everyTimer)
 		assert.is_nil(mock_hs._menubar)
-	end)
-
-	it("configure({ showMenubar = false }) tears down a running indicator", function()
-		inCall("Mute mic")
-		TeamsControl:start()
-		local bar, timer = mock_hs._menubar, mock_hs._everyTimer
-
-		TeamsControl:configure({ showMenubar = false })
-
-		assert.is_true(bar._deleted)
-		assert.is_true(timer._stopped)
-	end)
-
-	it("configure({ showMenubar = true }) starts it", function()
-		TeamsControl.showMenubar = false
-		TeamsControl:start()
-		inCall("Mute mic")
-
-		TeamsControl:configure({ showMenubar = true })
-
-		assert.is_truthy(mock_hs._menubar)
 	end)
 
 	it("stop() tears it down", function()

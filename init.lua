@@ -62,18 +62,6 @@ obj.menubarPollInterval = 1
 obj.log = hs.logger.new("TeamsControl", "info")
 
 obj._muteToggleInProgress = false
-obj._hotkeys = nil
-obj._muteButton = nil
-obj._muteButtonWindows = nil
--- Hammerspoon garbage-collects a running hs.timer that nothing references, so
--- an in-flight toggle's timers are kept here.
-obj._deadman = nil
-obj._stepTimer = nil
-obj._activationWatcher = nil
-obj._activationTimer = nil
-obj._started = false
-obj._menubar = nil
-obj._menubarTimer = nil
 obj._nextMenubarWalk = 0
 
 local MUTE_LABEL_PATTERN = "ute mic$"
@@ -145,18 +133,15 @@ local function muteLabelOf(button)
 	return nil
 end
 
-local function walkForMuteButton(self, teamsApp, windows)
-	self._muteButton = findMuteButton(teamsApp)
-	self._muteButtonWindows = windows
-	return self._muteButton
-end
-
 -- Walking Teams' AX tree blocks Hammerspoon for ~0.5-1s, so the button found
--- by one toggle is reused by the next.
+-- by one lookup is reused by the next.
 local function findMuteButtonCached(self, teamsApp)
 	local windows = windowSetKey(teamsApp)
 	if windows == self._muteButtonWindows and muteLabelOf(self._muteButton) then return self._muteButton end
-	return walkForMuteButton(self, teamsApp, windows)
+	self._muteButton = findMuteButton(teamsApp)
+	self._muteButtonWindows = windows
+	self.log.df("Walked Teams AX tree for mute button: %s", self._muteButton and "found" or "not found")
+	return self._muteButton
 end
 
 -- Teams keeps the mic open while muted, so an open mic is a cheap "maybe in a
@@ -173,8 +158,7 @@ end
 --- Method
 --- Sets one or more of TeamsControl's variables (`teamsBundleID`,
 --- `activationTimeout`, `clickSettleDelay`, `clickSettleMaxRetries`,
---- `showMenubar`, `menubarPollInterval`) from a table. After `start()`, the
---- menu bar indicator is started or stopped to match.
+--- `showMenubar`, `menubarPollInterval`) from a table. Call it before `start()`.
 ---
 --- Parameters:
 ---  * opts - a table with any of the variable names above as keys
@@ -191,13 +175,6 @@ function obj:configure(opts)
 		"menubarPollInterval",
 	}) do
 		if opts[key] ~= nil then self[key] = opts[key] end
-	end
-	if self._started and (opts.showMenubar ~= nil or opts.menubarPollInterval ~= nil) then
-		if self.showMenubar then
-			self:_startMenubar()
-		else
-			self:_stopMenubar()
-		end
 	end
 	return self
 end
@@ -251,6 +228,8 @@ function obj:toggleMute(done)
 
 	updateProgress("Toggling Teams mute…")
 
+	-- Hammerspoon garbage-collects a running hs.timer that nothing references, so
+	-- an in-flight toggle's timers and watcher are kept on self.
 	local function after(delay, fn) self._stepTimer = hs.timer.doAfter(delay, fn) end
 
 	local function stopWaitingForActivation()
@@ -260,19 +239,9 @@ function obj:toggleMute(done)
 		self._activationTimer = nil
 	end
 
-	-- If any step below throws before finish() runs (AX traversal, keyStroke,
-	-- an app that never activates), _muteToggleInProgress would stay true and
-	-- every later hotkey press would silently early-return. This clears it.
-	self._deadman = hs.timer.doAfter(self.activationTimeout + 3, function()
-		if self._stepTimer then self._stepTimer:stop() end
-		stopWaitingForActivation()
-		self._muteToggleInProgress = false
-		withdrawProgressIndicator()
-		notifyDone()
-	end)
-
 	local function finish()
 		self._deadman:stop()
+		if self._stepTimer then self._stepTimer:stop() end
 		stopWaitingForActivation()
 		self._muteToggleInProgress = false
 		withdrawProgressIndicator()
@@ -302,6 +271,14 @@ function obj:toggleMute(done)
 	end
 
 	local function showStillState(buttonLabel) showFailure("STILL " .. micState(buttonLabel):upper()) end
+
+	-- If any step below throws before finish() runs (AX traversal, keyStroke,
+	-- an app that never activates), _muteToggleInProgress would stay true and
+	-- every later hotkey press would silently early-return. This clears it.
+	self._deadman = hs.timer.doAfter(self.activationTimeout + 3, function()
+		finish()
+		showFailure("Mute toggle timed out")
+	end)
 
 	if not teamsApp then
 		finish()
@@ -370,19 +347,30 @@ function obj:toggleMute(done)
 
 		-- Two phases, each with its own clickSettleMaxRetries budget: poll after the
 		-- keystroke, and if that never registers, click the button and poll again.
+		local function settled(label)
+			if not (label and label ~= beforeLabel) then return false end
+			finish()
+			showSuccess(label)
+			return true
+		end
+
 		local function checkResult(phase, attempt)
 			local afterLabel = currentLabel()
 
-			if afterLabel and afterLabel ~= beforeLabel then
-				finish()
-				showSuccess(afterLabel)
+			if settled(afterLabel) then
+				return
 			elseif attempt < self.clickSettleMaxRetries then
 				after(self.clickSettleDelay, function() checkResult(phase, attempt + 1) end)
 			elseif phase == "keystroke" then
 				updateProgress("Retrying Teams mute toggle…")
+				-- A frozen main-window label can hide a keystroke that worked, and
+				-- it catches up once Teams is in front: clicking then would undo it.
 				withTeamsFrontmost(function()
-					clickButton()
-					after(self.clickSettleDelay, function() checkResult("click", 1) end)
+					after(self.clickSettleDelay, function()
+						if settled(currentLabel()) then return end
+						clickButton()
+						after(self.clickSettleDelay, function() checkResult("click", 1) end)
+					end)
 				end)
 			else
 				finish()
@@ -432,21 +420,16 @@ function obj:_currentMuteLabel()
 	if not teams then return nil, "Teams not running" end
 	if not anyMicInUse() then return nil, "no mic in use" end
 
-	local windows = windowSetKey(teams)
-	local unchanged = windows == self._muteButtonWindows
-	local label = unchanged and muteLabelOf(self._muteButton)
-	if label then return label end
-
 	local now = hs.timer.secondsSinceEpoch()
-	if unchanged and not self._muteButton and now < self._nextMenubarWalk then return nil, "no mute button found" end
-	walkForMuteButton(self, teams, windows)
-	self.log.df("Walked Teams AX tree for mute button: %s", self._muteButton and "found" or "not found")
+	if not self._muteButton and now < self._nextMenubarWalk and windowSetKey(teams) == self._muteButtonWindows then
+		return nil, "no mute button found"
+	end
+	local label = muteLabelOf(findMuteButtonCached(self, teams))
 	if not self._muteButton then self._nextMenubarWalk = now + MENUBAR_MISSED_WALK_BACKOFF end
-	label = muteLabelOf(self._muteButton)
 	return label, not label and "no mute button found" or nil
 end
 
-function obj:_refreshMenubar()
+local function refreshMenubar(self)
 	local label, reason = self:_currentMuteLabel()
 	local muted = label and label:match("^Unmute")
 	local state = not label and ("hidden: " .. reason) or muted and "muted" or "unmuted"
@@ -473,14 +456,18 @@ function obj:_refreshMenubar()
 	)
 end
 
+-- A no-op once stopped, so a click's toggle settling late can't resurrect the
+-- item. AX reads can throw while Teams re-renders, and hs.timer stops a
+-- repeating timer whose callback throws.
+function obj:_refreshMenubar()
+	if not self._menubarTimer then return end
+	local ok, err = xpcall(refreshMenubar, debug.traceback, self)
+	if not ok then self.log.e("Menu bar refresh failed: " .. tostring(err)) end
+end
+
 function obj:_startMenubar()
 	self:_stopMenubar()
-	-- hs.timer stops a repeating timer whose callback throws, and a Teams
-	-- re-render mid-walk can make an AX read throw.
-	self._menubarTimer = hs.timer.doEvery(self.menubarPollInterval, function()
-		local ok, err = xpcall(function() self:_refreshMenubar() end, debug.traceback)
-		if not ok then self.log.e("Menu bar refresh failed: " .. tostring(err)) end
-	end)
+	self._menubarTimer = hs.timer.doEvery(self.menubarPollInterval, function() self:_refreshMenubar() end)
 	self:_refreshMenubar()
 	return self
 end
@@ -515,7 +502,6 @@ end
 --- Returns:
 ---  * The TeamsControl object, for method chaining
 function obj:start()
-	self._started = true
 	if self.showMenubar then self:_startMenubar() end
 	return self
 end
@@ -533,7 +519,6 @@ function obj:stop()
 		end
 		self._hotkeys = nil
 	end
-	self._started = false
 	return self:_stopMenubar()
 end
 
