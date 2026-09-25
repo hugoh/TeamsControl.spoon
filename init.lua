@@ -38,14 +38,14 @@ obj.activationTimeout = 5
 
 --- TeamsControl.clickSettleDelay
 --- Variable
---- Seconds between accessibility re-checks after sending the mute keystroke (default: 0.15).
-obj.clickSettleDelay = 0.15
+--- Seconds between accessibility re-checks after sending the mute keystroke (default: 0.05).
+obj.clickSettleDelay = 0.05
 
 --- TeamsControl.clickSettleMaxRetries
 --- Variable
 --- How many times to re-check the button label -- after the keystroke, and again after the
---- click fallback -- before declaring the toggle failed (default: 3).
-obj.clickSettleMaxRetries = 3
+--- click fallback -- before declaring the toggle failed (default: 10).
+obj.clickSettleMaxRetries = 10
 
 --- TeamsControl.showMenubar
 --- Variable
@@ -133,11 +133,17 @@ local function muteLabelOf(button)
 	return nil
 end
 
+local function validCachedMuteButton(self, teamsApp)
+	local windows = windowSetKey(teamsApp)
+	if windows == self._muteButtonWindows and muteLabelOf(self._muteButton) then return self._muteButton end
+	return nil, windows
+end
+
 -- Walking Teams' AX tree blocks Hammerspoon for ~0.5-1s, so the button found
 -- by one lookup is reused by the next.
 local function findMuteButtonCached(self, teamsApp)
-	local windows = windowSetKey(teamsApp)
-	if windows == self._muteButtonWindows and muteLabelOf(self._muteButton) then return self._muteButton end
+	local cached, windows = validCachedMuteButton(self, teamsApp)
+	if cached then return cached end
 	self._muteButton = findMuteButton(teamsApp)
 	self._muteButtonWindows = windows
 	self.log.df("Walked Teams AX tree for mute button: %s", self._muteButton and "found" or "not found")
@@ -385,7 +391,13 @@ function obj:toggleMute(done)
 		after(self.clickSettleDelay, function() checkResult("keystroke", 1) end)
 	end
 
-	after(ALERT_PAINT_DELAY, sendMuteToggle)
+	-- Only a cache miss walks the AX tree, the one step that blocks long enough
+	-- to need the progress alert painted first.
+	if validCachedMuteButton(self, teamsApp) then
+		sendMuteToggle()
+	else
+		after(ALERT_PAINT_DELAY, sendMuteToggle)
+	end
 	return self
 end
 

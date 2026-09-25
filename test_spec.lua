@@ -249,7 +249,7 @@ describe("configure", function()
 		TeamsControl:configure({ activationTimeout = 9, teamsBundleID = "com.example.teams" })
 		assert.are.equal(9, TeamsControl.activationTimeout)
 		assert.are.equal("com.example.teams", TeamsControl.teamsBundleID)
-		assert.are.equal(0.15, TeamsControl.clickSettleDelay)
+		assert.are.equal(0.05, TeamsControl.clickSettleDelay)
 	end)
 
 	it("returns self for chaining", function() assert.are.equal(TeamsControl, TeamsControl:configure({})) end)
@@ -310,6 +310,18 @@ describe("toggleMute when Teams is frontmost", function()
 		assert.are.equal(2, #mock_hs._keyStrokes)
 		local texts = alertTexts()
 		assert.are.equal("🎤 Teams Unmuted", texts[#texts])
+	end)
+
+	it("sends the keystroke right away when the cached button is still valid", function()
+		local win = makeWindow("Mute mic")
+		mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { win })
+
+		toggle()
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+		TeamsControl:toggleMute()
+
+		assert.are.equal(2, #mock_hs._keyStrokes)
 	end)
 
 	it("re-walks the AX tree on the next toggle when the remembered button went stale", function()

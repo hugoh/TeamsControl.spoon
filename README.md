@@ -68,8 +68,8 @@ Tune behaviour with `configure()` (all optional):
 hs.loadSpoon("TeamsControl"):configure({
   teamsBundleID = "com.microsoft.teams2",  -- Teams app bundle identifier
   activationTimeout = 5,                    -- seconds to wait for Teams to come forward when retrying
-  clickSettleDelay = 0.15,                  -- seconds between checks that the toggle registered
-  clickSettleMaxRetries = 3,                -- checks before retrying, then before giving up
+  clickSettleDelay = 0.05,                  -- seconds between checks that the toggle registered
+  clickSettleMaxRetries = 10,               -- checks before retrying, then before giving up
   showMenubar = true,                       -- show the menu bar indicator
   menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes
 }):start()
