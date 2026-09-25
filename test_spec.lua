@@ -15,9 +15,12 @@ local function makeLogger()
 	return l
 end
 
+local nextWindowID = 0
+
 -- Build an accessibility subtree: a window element whose descendants include
--- (optionally) a mute button with the given label.
-local function makeWindow(muteLabel)
+-- (optionally) a mute button with the given label. `standard = false` makes it
+-- a non-standard window like Teams' floating compact view.
+local function makeWindow(muteLabel, standard)
 	local children = {}
 	if muteLabel then
 		table.insert(children, {
@@ -28,15 +31,24 @@ local function makeWindow(muteLabel)
 			AXSize = { w = 46, h = 46 },
 		})
 	end
-	return { AXRole = "AXWindow", AXChildren = { { AXRole = "AXGroup", AXChildren = children } } }
+	nextWindowID = nextWindowID + 1
+	local win = {
+		AXRole = "AXWindow",
+		AXChildren = { { AXRole = "AXGroup", AXChildren = children } },
+		_id = nextWindowID,
+		_standard = standard ~= false,
+	}
+	function win:id() return self._id end
+	function win:isStandard() return self._standard end
+	return win
 end
 
 local function muteButtonOf(win) return win.AXChildren[1].AXChildren[1] end
 
 local function makeApp(bundleID, windows)
-	local app = { _bid = bundleID, _activated = 0 }
+	local app = { _bid = bundleID, _activated = 0, _windows = windows or {} }
 	function app:bundleID() return self._bid end
-	app.allWindows = function() return windows or {} end
+	function app:allWindows() return self._windows end
 	function app:activate() self._activated = self._activated + 1 end
 	return app
 end
@@ -71,13 +83,18 @@ before_each(function()
 		return t
 	end
 	-- Fire pending one-shot timers shortest delay first, repeatedly (callbacks
-	-- may schedule more), honouring stop(). Capped so a scheduling loop can't
-	-- hang the suite.
-	mock_hs._fireTimers = function()
+	-- may schedule more), honouring stop() and skipping any longer than
+	-- maxDelay. Capped so a scheduling loop can't hang the suite.
+	mock_hs._fireTimers = function(maxDelay)
 		for _ = 1, 50 do
 			local dueIndex
 			for i, t in ipairs(timers) do
-				if not t._stopped and not t._fired and (not dueIndex or t._delay < timers[dueIndex]._delay) then
+				if
+					not t._stopped
+					and not t._fired
+					and (not maxDelay or t._delay <= maxDelay)
+					and (not dueIndex or t._delay < timers[dueIndex]._delay)
+				then
 					dueIndex = i
 				end
 			end
@@ -98,7 +115,9 @@ before_each(function()
 
 	mock_hs._clicks = {}
 	mock_hs.eventtap = {
-		keyStroke = function(mods, key) table.insert(mock_hs._keyStrokes, { mods = mods, key = key }) end,
+		keyStroke = function(mods, key, _, app)
+			table.insert(mock_hs._keyStrokes, { mods = mods, key = key, app = app })
+		end,
 		leftClick = function(point) table.insert(mock_hs._clicks, point) end,
 	}
 
@@ -137,7 +156,9 @@ before_each(function()
 
 	mock_hs._running = nil
 	mock_hs.application.get = function(bid)
-		if mock_hs._running and mock_hs._running:bundleID() == bid then return mock_hs._running end
+		for _, app in ipairs({ mock_hs._running or false, mock_hs._frontmost or false }) do
+			if app and app:bundleID() == bid then return app end
+		end
 	end
 
 	mock_hs._micInUse = false
@@ -483,52 +504,136 @@ describe("toggleMute timer lifetime", function()
 end)
 
 describe("toggleMute when Teams is not frontmost", function()
-	it("activates Teams, toggles on the activation event, and restores focus", function()
-		local other = makeApp("com.other.app")
+	local other, win, teams
+
+	before_each(function()
+		other = makeApp("com.other.app")
 		mock_hs._frontmost = other
-		local win = makeWindow("Mute mic")
-		local teams = makeApp(TeamsControl.teamsBundleID, { win })
+		win = makeWindow("Mute mic")
+		teams = makeApp(TeamsControl.teamsBundleID, { win })
+		mock_hs._running = teams
+	end)
 
-		TeamsControl:toggleMute()
-		assert.are.equal(TeamsControl.teamsBundleID, mock_hs._launched[1])
-		assert.is_true(mock_hs._watcher._started)
+	-- Runs the keystroke phase to exhaustion without the label flipping, so the
+	-- click fallback starts and waits for Teams to activate.
+	local function exhaustKeystroke()
+		toggle()
+		mock_hs._fireTimers(TeamsControl.clickSettleDelay)
+	end
 
-		mock_hs._watcher._fn(nil, "activated", teams)
-
-		-- The activation-timeout timer is stopped once Teams activates.
-		local timeoutTimer
-		for _, t in ipairs(mock_hs.timer._pending) do
-			if t._delay == TeamsControl.activationTimeout then timeoutTimer = t end
-		end
-		assert.is_true(timeoutTimer._stopped)
-
+	it("sends the keystroke to Teams in the background without activating it", function()
+		toggle()
 		muteButtonOf(win).AXDescription = "Unmute mic"
 		mock_hs._fireTimers()
 
-		assert.is_true(mock_hs._watcher._stopped)
-		assert.are.equal(1, other._activated) -- focus restored
+		assert.are.equal(teams, mock_hs._keyStrokes[1].app)
+		assert.are.same({}, mock_hs._launched)
+		assert.are.equal(0, other._activated)
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
 		assert.is_false(TeamsControl._muteToggleInProgress)
 	end)
 
-	it("reports a timeout when Teams never activates", function()
-		mock_hs._frontmost = makeApp("com.other.app")
+	it("reports 'No active Teams call' without launching Teams when it isn't running", function()
+		mock_hs._running = nil
 
-		TeamsControl:toggleMute()
+		toggle()
+
+		assert.are.same({}, mock_hs._launched)
+		local texts = alertTexts()
+		assert.are.equal("🛑 No active Teams call", texts[#texts])
+		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
+	it("activates Teams only for the click fallback, then restores focus", function()
+		local origLeftClick = mock_hs.eventtap.leftClick
+		mock_hs.eventtap.leftClick = function(point)
+			origLeftClick(point)
+			muteButtonOf(win).AXDescription = "Unmute mic"
+		end
+
+		exhaustKeystroke()
+		assert.are.equal(TeamsControl.teamsBundleID, mock_hs._launched[1])
+		assert.are.equal(0, #mock_hs._clicks)
+
+		mock_hs._frontmost = teams
+		mock_hs._watcher._fn(nil, "activated", teams)
 		mock_hs._fireTimers()
 
+		assert.are.equal(1, #mock_hs._clicks)
+		assert.is_true(mock_hs._watcher._stopped)
+		assert.are.equal(1, other._activated)
+		local texts = alertTexts()
+		assert.are.equal("🔶 Teams Muted", texts[#texts])
+		assert.is_false(TeamsControl._muteToggleInProgress)
+	end)
+
+	it("keeps the activation watcher referenced so it can't be garbage-collected", function()
+		exhaustKeystroke()
+
+		assert.are.equal(mock_hs._watcher, TeamsControl._activationWatcher)
+	end)
+
+	it("reports a timeout when Teams never activates for the click fallback", function()
+		exhaustKeystroke()
+		mock_hs._fireTimers()
+
+		assert.are.equal(0, #mock_hs._clicks)
 		local texts = alertTexts()
 		assert.are.equal("🛑 Teams did not activate in time", texts[#texts])
 		assert.is_false(TeamsControl._muteToggleInProgress)
 	end)
 
 	it("calls done exactly once when activation times out", function()
-		mock_hs._frontmost = makeApp("com.other.app")
 		local calls = 0
 
-		TeamsControl:toggleMute(function() calls = calls + 1 end)
+		toggle(function() calls = calls + 1 end)
+		mock_hs._fireTimers()
 		mock_hs._fireTimers()
 
 		assert.are.equal(1, calls)
+	end)
+end)
+
+describe("mute button lookup", function()
+	-- Teams' main meeting window stops updating while Teams is in the
+	-- background; the floating compact view (a non-standard window) stays live.
+	it("prefers the compact view's button over the main meeting window's", function()
+		local main = makeWindow("Mute mic")
+		local compact = makeWindow("Unmute mic", false)
+		mock_hs._running = makeApp(TeamsControl.teamsBundleID, { main, compact })
+		mock_hs._micInUse = true
+
+		TeamsControl:start()
+
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("re-walks when Teams' windows change, even if the cached button still reads fine", function()
+		local main = makeWindow("Mute mic")
+		local teams = makeApp(TeamsControl.teamsBundleID, { main })
+		mock_hs._running = teams
+		mock_hs._micInUse = true
+
+		TeamsControl:start()
+		table.insert(teams._windows, makeWindow("Unmute mic", false))
+		mock_hs._everyTimer._fn()
+
+		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("toggleMute re-walks when Teams' windows change", function()
+		local main = makeWindow("Mute mic")
+		local teams = makeApp(TeamsControl.teamsBundleID, { main })
+		mock_hs._frontmost = teams
+
+		toggle()
+		muteButtonOf(main).AXDescription = "Unmute mic"
+		mock_hs._fireTimers()
+		table.insert(teams._windows, makeWindow("Unmute mic", false))
+		toggle()
+
+		assert.are.equal(2, mock_hs._windowElementCalls)
 	end)
 end)
 
