@@ -54,6 +54,11 @@ obj.clickSettleMaxRetries = 10
 --- mute (default: true).
 obj.showMenubar = true
 
+--- TeamsControl.menubarStatusDot
+--- Variable
+--- Show a 🟢 (unmuted) or 🟡 (muted) dot next to the menu bar icon (default: true).
+obj.menubarStatusDot = true
+
 --- TeamsControl.menubarPollInterval
 --- Variable
 --- Seconds between menu bar indicator refreshes (default: 1).
@@ -164,7 +169,7 @@ end
 --- Method
 --- Sets one or more of TeamsControl's variables (`teamsBundleID`,
 --- `activationTimeout`, `clickSettleDelay`, `clickSettleMaxRetries`,
---- `showMenubar`, `menubarPollInterval`) from a table. Call it before `start()`.
+--- `showMenubar`, `menubarStatusDot`, `menubarPollInterval`) from a table. Call it before `start()`.
 ---
 --- Parameters:
 ---  * opts - a table with any of the variable names above as keys
@@ -178,6 +183,7 @@ function obj:configure(opts)
 		"clickSettleDelay",
 		"clickSettleMaxRetries",
 		"showMenubar",
+		"menubarStatusDot",
 		"menubarPollInterval",
 	}) do
 		if opts[key] ~= nil then self[key] = opts[key] end
@@ -466,6 +472,7 @@ local function refreshMenubar(self)
 		hs.image.imageFromName(muted and "NSTouchBarAudioInputMuteTemplate" or "NSTouchBarAudioInputTemplate"),
 		true
 	)
+	if self.menubarStatusDot then self._menubar:setTitle(muted and "🟡" or "🟢") end
 end
 
 -- A no-op once stopped, so a click's toggle settling late can't resurrect the

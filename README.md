@@ -12,7 +12,7 @@ A Hammerspoon Spoon that toggles the Microsoft Teams meeting microphone from any
 - **Toggle mute from any app** with one hotkey, without Teams stealing focus
 - **Verified toggles**: checks Teams actually changed state, and retries by clicking the mute button if needed
 - **On-screen alert** with the result: `🔶 Teams Muted` / `🎤 Teams Unmuted`, or a `🛑` alert explaining what went wrong
-- **Menu bar indicator** during calls: a mic when unmuted, a slashed mic when muted, hidden otherwise. It follows mute changes made in Teams, and clicking it toggles mute
+- **Menu bar indicator** during calls: a mic with a 🟢 when unmuted, a slashed mic with a 🟡 when muted, hidden otherwise. It follows mute changes made in Teams, and clicking it toggles mute
 
 ## Installation
 
@@ -71,6 +71,7 @@ hs.loadSpoon("TeamsControl"):configure({
   clickSettleDelay = 0.05,                  -- seconds between checks that the toggle registered
   clickSettleMaxRetries = 10,               -- checks before retrying, then before giving up
   showMenubar = true,                       -- show the menu bar indicator
+  menubarStatusDot = true,                  -- show a 🟢/🟡 dot next to the menu bar icon
   menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes
 }):start()
 ```

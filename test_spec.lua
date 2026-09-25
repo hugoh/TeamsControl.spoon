@@ -176,6 +176,7 @@ before_each(function()
 	mock_hs.menubar = {
 		new = function(inMenuBar, autosaveName)
 			local m = { _inMenuBar = inMenuBar, _autosaveName = autosaveName, _deleted = false }
+			function m:setTitle(title) self._title = title end
 			function m:setIcon(image, template)
 				self._icon = image
 				self._template = template
@@ -744,6 +745,25 @@ describe("menu bar indicator", function()
 		TeamsControl:start()
 
 		assert.are.equal("NSTouchBarAudioInputMuteTemplate", mock_hs._menubar._icon._name)
+	end)
+
+	it("shows a green dot when unmuted and a yellow dot when muted", function()
+		local win = inCall("Mute mic")
+
+		TeamsControl:start()
+		assert.are.equal("🟢", mock_hs._menubar._title)
+		muteButtonOf(win).AXDescription = "Unmute mic"
+		tick()
+
+		assert.are.equal("🟡", mock_hs._menubar._title)
+	end)
+
+	it("leaves out the dot when menubarStatusDot is false", function()
+		inCall("Mute mic")
+
+		TeamsControl:configure({ menubarStatusDot = false }):start()
+
+		assert.is_nil(mock_hs._menubar._title)
 	end)
 
 	it("follows a mute toggled in Teams by re-reading the cached button", function()
