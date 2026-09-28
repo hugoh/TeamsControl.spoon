@@ -815,6 +815,43 @@ describe("menu bar indicator", function()
 		assert.are.equal("NSTouchBarAudioInputTemplate", mock_hs._menubar._icon._name)
 	end)
 
+	-- Another app's call keeps the mic in use for its whole length, and each
+	-- walk blocks Hammerspoon for up to a second.
+	it("backs off further after each consecutive walk that finds no mute button", function()
+		inCall(nil)
+
+		TeamsControl:start()
+		mock_hs._now = 5
+		tick()
+		assert.are.equal(2, mock_hs._windowElementCalls)
+
+		mock_hs._now = 10
+		tick()
+		assert.are.equal(2, mock_hs._windowElementCalls)
+
+		mock_hs._now = 15
+		tick()
+		assert.are.equal(3, mock_hs._windowElementCalls)
+	end)
+
+	it("restarts the backoff when Teams' windows change", function()
+		local win = inCall(nil)
+
+		TeamsControl:start()
+		mock_hs._now = 5
+		tick()
+		table.insert(mock_hs._running._windows, makeWindow(nil, false))
+		mock_hs._now = 6
+		tick()
+		assert.are.equal(4, mock_hs._windowElementCalls) -- both windows walked
+
+		table.insert(win.AXChildren[1].AXChildren, { AXRole = "AXButton", AXDescription = "Mute mic", AXChildren = {} })
+		mock_hs._now = 11
+		tick()
+
+		assert.are.equal("NSTouchBarAudioInputTemplate", mock_hs._menubar._icon._name)
+	end)
+
 	it("re-walks right away when the cached button went stale", function()
 		local win = inCall("Mute mic")
 
