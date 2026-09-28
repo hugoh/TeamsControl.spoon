@@ -68,6 +68,7 @@ obj.log = hs.logger.new("TeamsControl", "info")
 
 obj._muteToggleInProgress = false
 obj._nextMenubarWalk = 0
+obj._missedWalks = 0
 
 local MUTE_LABEL_PATTERN = "ute mic$"
 
@@ -76,8 +77,11 @@ local MUTE_LABEL_PATTERN = "ute mic$"
 local ALERT_PAINT_DELAY = 0.04
 
 -- The mic can be open with no mute button to find (Teams' pre-join screen,
--- another app's call), so a walk that found nothing isn't retried every tick.
+-- another app's call), so a walk that found nothing isn't retried every tick,
+-- and each further miss doubles the wait. Joining a call opens a window, which
+-- walks right away regardless.
 local MENUBAR_MISSED_WALK_BACKOFF = 5
+local MENUBAR_MISSED_WALK_BACKOFF_MAX = 60
 
 -- Depth-first search of an accessibility subtree for the first AXButton whose
 -- description/title matches `pattern`. Teams' meeting-control buttons sit
@@ -440,11 +444,19 @@ function obj:_currentMuteLabel()
 	if not anyMicInUse() then return nil, "no mic in use" end
 
 	local now = hs.timer.secondsSinceEpoch()
-	if not self._muteButton and now < self._nextMenubarWalk and windowSetKey(teams) == self._muteButtonWindows then
+	if windowSetKey(teams) ~= self._muteButtonWindows then
+		self._missedWalks = 0
+	elseif not self._muteButton and now < self._nextMenubarWalk then
 		return nil, "no mute button found"
 	end
 	local label = muteLabelOf(findMuteButtonCached(self, teams))
-	if not self._muteButton then self._nextMenubarWalk = now + MENUBAR_MISSED_WALK_BACKOFF end
+	if self._muteButton then
+		self._missedWalks = 0
+	else
+		self._missedWalks = self._missedWalks + 1
+		local backoff = MENUBAR_MISSED_WALK_BACKOFF * 2 ^ (self._missedWalks - 1)
+		self._nextMenubarWalk = now + math.min(backoff, MENUBAR_MISSED_WALK_BACKOFF_MAX)
+	end
 	return label, not label and "no mute button found" or nil
 end
 
