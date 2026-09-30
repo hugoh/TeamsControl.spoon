@@ -495,19 +495,42 @@ function obj:_refreshMenubar()
 	if not ok then self.log.e("Menu bar refresh failed: " .. tostring(err)) end
 end
 
-function obj:_startMenubar()
-	self:_stopMenubar()
+function obj:_startPoll()
+	if self._menubarTimer then return end
 	self._menubarTimer = hs.timer.doEvery(self.menubarPollInterval, function() self:_refreshMenubar() end)
 	self:_refreshMenubar()
-	return self
 end
 
-function obj:_stopMenubar()
+function obj:_stopPoll()
 	if self._menubarTimer then self._menubarTimer:stop() end
 	if self._menubar then self._menubar:delete() end
 	self._menubarTimer = nil
 	self._menubar = nil
 	self._menubarState = nil
+end
+
+-- Polling only makes sense while Teams runs, so launch and quit events drive it. A lookup
+-- that throws counts as running, leaving the refresh to log the failure.
+function obj:_startMenubar()
+	self:_stopMenubar()
+	self._appWatcher = hs.application.watcher.new(function(_, event, app)
+		if not app or app:bundleID() ~= self.teamsBundleID then return end
+		if event == hs.application.watcher.launched then
+			self:_startPoll()
+		elseif event == hs.application.watcher.terminated then
+			self:_stopPoll()
+		end
+	end)
+	self._appWatcher:start()
+	local ok, teams = pcall(hs.application.get, self.teamsBundleID)
+	if not ok or teams then self:_startPoll() end
+	return self
+end
+
+function obj:_stopMenubar()
+	self:_stopPoll()
+	if self._appWatcher then self._appWatcher:stop() end
+	self._appWatcher = nil
 	return self
 end
 

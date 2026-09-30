@@ -136,7 +136,7 @@ before_each(function()
 		frontmostApplication = function() return mock_hs._frontmost end,
 		launchOrFocusByBundleID = function(bid) table.insert(mock_hs._launched, bid) end,
 	}
-	mock_hs.application.watcher = { activated = "activated" }
+	mock_hs.application.watcher = { activated = "activated", launched = "launched", terminated = "terminated" }
 	mock_hs.application.watcher.new = function(fn)
 		local w = { _fn = fn, _started = false, _stopped = false }
 		function w:start() self._started = true end
@@ -935,6 +935,7 @@ describe("menu bar indicator", function()
 	end)
 
 	it("logs a failing refresh instead of letting it stop the poll timer", function()
+		inCall("Mute mic")
 		TeamsControl:start()
 		mock_hs.application.get = function() error("AX element went away") end
 
@@ -944,9 +945,68 @@ describe("menu bar indicator", function()
 	end)
 
 	it("polls at menubarPollInterval", function()
+		inCall("Mute mic")
 		TeamsControl:configure({ menubarPollInterval = 0.5 }):start()
 
 		assert.are.equal(0.5, mock_hs._everyTimer._interval)
+	end)
+
+	it("doesn't poll while Teams isn't running", function()
+		TeamsControl:start()
+
+		assert.is_nil(mock_hs._everyTimer)
+		assert.is_truthy(TeamsControl._appWatcher)
+		assert.is_true(TeamsControl._appWatcher._started)
+	end)
+
+	it("starts polling when Teams launches", function()
+		TeamsControl:start()
+		local teams = makeApp(TeamsControl.teamsBundleID, {})
+
+		TeamsControl._appWatcher._fn("Microsoft Teams", "launched", teams)
+
+		assert.is_not_nil(mock_hs._everyTimer)
+		assert.is_false(mock_hs._everyTimer._stopped)
+	end)
+
+	it("ignores other apps launching", function()
+		TeamsControl:start()
+
+		TeamsControl._appWatcher._fn("Notes", "launched", makeApp("com.apple.Notes", {}))
+
+		assert.is_nil(mock_hs._everyTimer)
+	end)
+
+	it("stops polling and hides the item when Teams quits", function()
+		inCall("Mute mic")
+		TeamsControl:start()
+		local bar, timer = mock_hs._menubar, mock_hs._everyTimer
+
+		TeamsControl._appWatcher._fn("Microsoft Teams", "terminated", makeApp(TeamsControl.teamsBundleID, {}))
+
+		assert.is_true(timer._stopped)
+		assert.is_true(bar._deleted)
+		assert.is_nil(TeamsControl._menubarTimer)
+	end)
+
+	it("doesn't start a second timer when Teams launches while already polling", function()
+		inCall("Mute mic")
+		TeamsControl:start()
+		local timer = mock_hs._everyTimer
+
+		TeamsControl._appWatcher._fn("Microsoft Teams", "launched", makeApp(TeamsControl.teamsBundleID, {}))
+
+		assert.are.equal(timer, mock_hs._everyTimer)
+	end)
+
+	it("stop() stops the application watcher", function()
+		TeamsControl:start()
+		local watcher = TeamsControl._appWatcher
+
+		TeamsControl:stop()
+
+		assert.is_true(watcher._stopped)
+		assert.is_nil(TeamsControl._appWatcher)
 	end)
 
 	it("isn't started by init()", function()
