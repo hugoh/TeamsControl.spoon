@@ -72,7 +72,7 @@ hs.loadSpoon("TeamsControl"):configure({
   clickSettleMaxRetries = 10,               -- checks before retrying, then before giving up
   showMenubar = true,                       -- show the menu bar indicator
   menubarStatusDot = true,                  -- show a 🟢/🟡 dot next to the menu bar icon
-  menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes
+  menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes (only while Teams runs)
 }):start()
 ```
 
