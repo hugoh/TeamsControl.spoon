@@ -26,9 +26,7 @@ run = """
 rm -rf dist
 mkdir -p dist/TeamsControl.spoon
 cp init.lua LICENSE README.md docs/docs.json dist/TeamsControl.spoon/
-cd dist
-zip -r ../TeamsControl.spoon.zip TeamsControl.spoon
-cd ..
+(cd dist && zip -r ../TeamsControl.spoon.zip TeamsControl.spoon)
 rm -rf dist
 """
 description = "Build a self-contained TeamsControl.spoon.zip (includes docs.json)"

@@ -7,10 +7,6 @@ base = "lua51"
 [hs]
 any = true
 
-# Hammerspoon runs Lua 5.4; table.unpack (5.2+) isn't in the lua51 base.
-[table.unpack]
-args = [{ type = "table" }, { type = "...", required = false }]
-
 # busted test globals
 [describe]
 any = true

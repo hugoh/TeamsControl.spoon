@@ -163,10 +163,7 @@ end
 -- call" gate in front of the AX lookup. Any input counts: Teams may not use
 -- the system default.
 local function anyMicInUse()
-	for _, device in ipairs(hs.audiodevice.allInputDevices()) do
-		if device:inUse() then return true end
-	end
-	return false
+	return hs.fnutils.some(hs.audiodevice.allInputDevices(), function(device) return device:inUse() end)
 end
 
 --- TeamsControl:configure(opts)

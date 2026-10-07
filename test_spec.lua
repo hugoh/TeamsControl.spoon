@@ -171,6 +171,15 @@ before_each(function()
 		end,
 	}
 
+	mock_hs.fnutils = {
+		some = function(list, fn)
+			for _, v in ipairs(list) do
+				if fn(v) then return true end
+			end
+			return false
+		end,
+	}
+
 	mock_hs.image = { imageFromName = function(name) return { _name = name } end }
 
 	mock_hs.menubar = {
