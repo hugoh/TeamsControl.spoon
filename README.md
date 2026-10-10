@@ -12,6 +12,7 @@ A Hammerspoon Spoon that toggles the Microsoft Teams meeting microphone from any
 - **Toggle mute from any app** with one hotkey, without Teams stealing focus
 - **Verified toggles**: checks Teams actually changed state, and retries by clicking the mute button if needed
 - **On-screen alert** with the result: `🔶 Teams Muted` / `🎤 Teams Unmuted`, or a `🛑` alert explaining what went wrong
+- **Teams local API** when available (see [below](#teams-local-api-optional)): mutes without keystrokes or focus changes, with the keystroke path as automatic fallback
 - **Menu bar indicator** during calls: a mic with a 🟢 when unmuted, a slashed mic with a 🟡 when muted, hidden otherwise. It follows mute changes made in Teams, and clicking it toggles mute
 
 ## Installation
@@ -73,6 +74,11 @@ hs.loadSpoon("TeamsControl"):configure({
   showMenubar = true,                       -- show the menu bar indicator
   menubarStatusDot = true,                  -- show a 🟢/🟡 dot next to the menu bar icon
   menubarPollInterval = 1,                  -- seconds between menu bar indicator refreshes (only while Teams runs)
+  useApi = true,                            -- use Teams' local API when available
+  apiPort = 8124,                           -- port of Teams' local API
+  apiRetryInterval = 30,                    -- seconds between attempts to reach the API
+  apiMaxRetries = 3,                        -- attempts per Teams launch before giving up
+  apiConfirmTimeout = 0.5,                  -- seconds to wait for the API to confirm a toggle before the keystroke fallback
 }):start()
 ```
 
@@ -80,9 +86,22 @@ hs.loadSpoon("TeamsControl"):configure({
 
 TeamsControl reads Teams' accessibility tree and sends synthetic keystrokes and clicks, so Hammerspoon needs **Accessibility** permission (System Settings → Privacy & Security → Accessibility). It never launches anything but Teams and never shells out.
 
+## Teams local API (optional)
+
+TeamsControl uses Teams' local third-party API when it can, which mutes without keystrokes or bringing Teams forward, and shows the menu bar state instantly. It falls back to the keystroke and accessibility path whenever the API is off, unpaired, or doesn't answer, so nothing here is required.
+
+To enable it:
+
+1. Create `~/Library/Containers/com.microsoft.teams2/Data/Library/Application Support/Microsoft/MSTeams/configuration.json` containing `{"thirdPartyDevices/thirdPartyDevicesManagerEnabled": true}`, then restart Teams.
+2. Join a call. Teams asks you to approve TeamsControl; the token is then stored in Hammerspoon's settings, so this happens once.
+
+The log (`info` level) shows which path each toggle takes. TeamsControl retries the connection `apiMaxRetries` times after Teams starts, so enable the API before launching Teams. Set `useApi = false` to turn it off.
+
 ## Credits
 
-The accessibility-tree mute-button lookup (`findButton` in `init.lua`) is adapted from `_teamsFindButtonByLabel` in [RobvH/teams-mac-hotkeys](https://github.com/RobvH/teams-mac-hotkeys).
+The accessibility-tree mute-button lookup (`findButton` in `ui.lua`) is adapted from `_teamsFindButtonByLabel` in [RobvH/teams-mac-hotkeys](https://github.com/RobvH/teams-mac-hotkeys).
+
+The Teams local API client (connection URL, pairing flow, token refresh and request format) follows [asp55/MSTeams.spoon2](https://github.com/asp55/MSTeams.spoon2) (MIT, © 2026 asp55), which in turn credits svrooij's documentation of the API.
 
 ## API documentation
 
