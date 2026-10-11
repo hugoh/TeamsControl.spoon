@@ -1,22 +1,12 @@
--- Shared mock `hs` environment and factories for the TeamsControl specs.
+-- Shared hs_mock setup, Teams-specific fakes and factories for the TeamsControl specs.
+
+local hs_mock = require("hs_mock")
 
 local H = {}
 
-local mock_hs
+local ctl
+local state
 local TeamsControl
-
-local function makeLogger()
-	local l = { _infos = {}, _warnings = {}, _errors = {}, _debugs = {}, _level = 3 }
-	l.getLogLevel = function() return l._level end
-	l.i = function(msg) table.insert(l._infos, msg) end
-	l.f = function(fmt, ...) table.insert(l._infos, string.format(fmt, ...)) end
-	l.w = function(msg) table.insert(l._warnings, msg) end
-	l.wf = function(fmt, ...) table.insert(l._warnings, string.format(fmt, ...)) end
-	l.e = function(msg) table.insert(l._errors, msg) end
-	l.d = function() end
-	l.df = function(fmt, ...) table.insert(l._debugs, string.format(fmt, ...)) end
-	return l
-end
 
 local nextWindowID = 0
 
@@ -57,190 +47,95 @@ local function makeApp(bundleID, windows)
 end
 
 -- Builds a fresh mock `hs` and loads a fresh spoon; call from before_each.
+-- Returns the local test state, the spoon, and hs_mock's ctl.
 function H.reset()
-	local timers = {}
-	local alerts = {}
+	local hs
+	hs, ctl = hs_mock.new()
+	state = { windowElementCalls = 0 }
 
-	mock_hs = {
-		logger = { new = function() return makeLogger() end },
-		_alerts = alerts,
-		_closed = {},
-		_launched = {},
-		_keyStrokes = {},
-		_frontmost = nil,
-	}
-
-	mock_hs.alert = {
-		show = function(text, ...)
-			local handle = { _text = text, _args = { ... } }
-			table.insert(alerts, handle)
-			return handle
-		end,
-		closeSpecific = function(handle) table.insert(mock_hs._closed, handle) end,
-	}
-
-	mock_hs.timer = { _pending = timers }
-	mock_hs.timer.doAfter = function(delay, fn)
-		local t = { _delay = delay, _fn = fn, _stopped = false }
-		function t:stop() self._stopped = true end
-		table.insert(timers, t)
-		return t
-	end
-	-- Fire pending one-shot timers shortest delay first, repeatedly (callbacks
-	-- may schedule more), honouring stop() and skipping any longer than
-	-- maxDelay. Capped so a scheduling loop can't hang the suite.
-	mock_hs._fireTimers = function(maxDelay)
-		for _ = 1, 50 do
-			local dueIndex
-			for i, t in ipairs(timers) do
-				if
-					not t._stopped
-					and not t._fired
-					and (not maxDelay or t._delay <= maxDelay)
-					and (not dueIndex or t._delay < timers[dueIndex]._delay)
-				then
-					dueIndex = i
-				end
-			end
-			if not dueIndex then return end
-			local due = table.remove(timers, dueIndex)
-			due._fired = true
-			due._fn()
-		end
-	end
-
-	mock_hs._windowElementCalls = 0
-	mock_hs.axuielement = {
+	-- Local, not in hs_mock: an honest hs.axuielement needs whole accessibility
+	-- trees; these fixtures make each window its own element (see makeWindow).
+	hs.axuielement = {
 		windowElement = function(win)
-			mock_hs._windowElementCalls = mock_hs._windowElementCalls + 1
+			state.windowElementCalls = state.windowElementCalls + 1
 			return win
 		end,
 	}
 
-	mock_hs._clicks = {}
-	mock_hs.eventtap = {
-		keyStroke = function(mods, key, _, app)
-			table.insert(mock_hs._keyStrokes, { mods = mods, key = key, app = app })
-		end,
-		leftClick = function(point) table.insert(mock_hs._clicks, point) end,
-	}
+	-- Local, not in hs_mock: incoming messages stay Lua tables on purpose; the real
+	-- decoder isn't under test.
+	hs.json.decode = function(str) return str end
 
-	mock_hs._mousePosition = { x = 0, y = 0 }
-	mock_hs.mouse = {
-		absolutePosition = function(point)
-			if point then
-				mock_hs._mousePosition = point
-			else
-				return mock_hs._mousePosition
-			end
-		end,
-	}
-
-	mock_hs.application = {
-		frontmostApplication = function() return mock_hs._frontmost end,
-		launchOrFocusByBundleID = function(bid) table.insert(mock_hs._launched, bid) end,
-	}
-	mock_hs.application.watcher = { activated = "activated", launched = "launched", terminated = "terminated" }
-	mock_hs.application.watcher.new = function(fn)
-		local w = { _fn = fn, _started = false, _stopped = false }
-		function w:start() self._started = true end
-		function w:stop() self._stopped = true end
-		mock_hs._watcher = w
-		return w
+	for _, name in ipairs({ "NSTouchBarAudioInputTemplate", "NSTouchBarAudioInputMuteTemplate" }) do
+		ctl.images[name] = { _name = name }
 	end
+	ctl.addAudioDevice({ name = "Built-in Microphone", input = true })
+	H.mic = ctl.addAudioDevice({ name = "Headset", input = true })
 
-	mock_hs._now = 0
-	mock_hs.timer.secondsSinceEpoch = function() return mock_hs._now end
-	mock_hs.timer.doEvery = function(interval, fn)
-		local t = { _interval = interval, _fn = fn, _stopped = false }
-		function t:stop() self._stopped = true end
-		mock_hs._everyTimer = t
-		return t
-	end
-
-	mock_hs._running = nil
-	mock_hs.application.get = function(bid)
-		for _, app in ipairs({ mock_hs._running or false, mock_hs._frontmost or false }) do
-			if app and app:bundleID() == bid then return app end
-		end
-	end
-
-	mock_hs._micInUse = false
-	mock_hs.audiodevice = {
-		allInputDevices = function()
-			return {
-				{ inUse = function() return false end },
-				{ inUse = function() return mock_hs._micInUse end },
-			}
-		end,
-	}
-
-	mock_hs.fnutils = {
-		some = function(list, fn)
-			for _, v in ipairs(list) do
-				if fn(v) then return true end
-			end
-			return false
-		end,
-	}
-
-	mock_hs.image = { imageFromName = function(name) return { _name = name } end }
-
-	mock_hs.menubar = {
-		new = function(inMenuBar, autosaveName)
-			local m = { _inMenuBar = inMenuBar, _autosaveName = autosaveName, _deleted = false }
-			function m:setTitle(title) self._title = title end
-			function m:setIcon(image, template)
-				self._icon = image
-				self._template = template
-			end
-			function m:setClickCallback(fn) self._click = fn end
-			function m:delete() self._deleted = true end
-			mock_hs._menubar = m
-			return m
-		end,
-	}
-
-	mock_hs.hotkey = {
-		bind = function(mods, key, fn)
-			local hk = { _mods = mods, _key = key, _fn = fn, _deleted = false }
-			function hk:delete() self._deleted = true end
-			return hk
-		end,
-	}
-
-	mock_hs._sockets = {}
-	mock_hs.websocket = {
-		new = function(url, callback)
-			local ws = { _url = url, _cb = callback, _sent = {}, _closed = false }
-			function ws:send(msg) table.insert(self._sent, msg) end
-			function ws:close() self._closed = true end
-			table.insert(mock_hs._sockets, ws)
-			return ws
-		end,
-	}
-	mock_hs._settings = {}
-	mock_hs.settings = {
-		get = function(k) return mock_hs._settings[k] end,
-		set = function(k, v) mock_hs._settings[k] = v end,
-	}
-	-- Incoming messages stay Lua tables; the real decoder isn't under test.
-	mock_hs.json = { decode = function(s) return s end }
-
-	mock_hs.spoons = { resourcePath = function(file) return file end }
-
-	package.loaded.hs = nil
-	_G.hs = mock_hs
+	_G.hs = hs
 
 	TeamsControl = dofile("init.lua")
-	H.hs, H.spoon = mock_hs, TeamsControl
-	return mock_hs, TeamsControl
+	H.spoon, H.ctl, H.state = TeamsControl, ctl, state
+	return state, TeamsControl, ctl
+end
+
+local function newest(predicate)
+	local timers = ctl.timers()
+	for i = #timers, 1, -1 do
+		if not predicate or predicate(timers[i]) then return timers[i] end
+	end
+end
+
+-- Fires the most recently scheduled pending timer once and retires it.
+function H.fireNewest()
+	local t = newest()
+	t:stop()
+	t:fire()
+end
+
+function H.newestTimer() return newest() end
+
+function H.everyTimer()
+	return newest(function(t) return t._repeats end)
+end
+
+function H.menubar() return ctl.menubars[#ctl.menubars] end
+
+function H.appWatcher() return ctl.appWatchers[#ctl.appWatchers] end
+
+-- Fires pending one-shot timers in due order, moving the clock to each and
+-- including ones their callbacks schedule; with maxDelay, only timers whose own
+-- delay is at most that, so a chain of short retries runs but not a longer
+-- timeout. The repeating tick is left alone (H.tick fires it). Capped so a
+-- scheduling loop can't hang the suite.
+function H.fireTimers(maxDelay)
+	for _ = 1, 50 do
+		local due, dueAt
+		for _, t in ipairs(ctl.timers()) do
+			local at = ctl.now + t:nextTrigger()
+			if not t._repeats and (not maxDelay or t._interval <= maxDelay) and (not due or at < dueAt) then
+				due, dueAt = t, at
+			end
+		end
+		if not due then return end
+		ctl.now = math.max(ctl.now, dueAt)
+		due:stop()
+		due:fire()
+	end
 end
 
 local function alertTexts()
 	local out = {}
-	for _, a in ipairs(mock_hs._alerts) do
-		table.insert(out, a._text)
+	for _, a in ipairs(ctl.alerts) do
+		table.insert(out, a.text)
+	end
+	return out
+end
+
+function H.closedAlerts()
+	local out = {}
+	for _, a in ipairs(ctl.alerts) do
+		if a.closed then table.insert(out, a) end
 	end
 	return out
 end
@@ -248,48 +143,54 @@ end
 -- Calls toggleMute and runs only the timer it schedules last: the deferral
 -- that lets the progress alert paint before the blocking AX lookup.
 local function toggle(done)
-	local pending = mock_hs.timer._pending
-	local before = #pending
+	local before = {}
+	for _, t in ipairs(ctl.timers()) do
+		before[t] = true
+	end
 	TeamsControl:toggleMute(done)
-	if #pending > before then
-		local deferred = table.remove(pending)
-		deferred._fired = true
-		if not deferred._stopped then deferred._fn() end
+	local deferred = newest(function(t) return not before[t] end)
+	if deferred then
+		deferred:stop()
+		deferred:fire()
 	end
 end
 
 H.makeWindow, H.muteButtonOf, H.makeApp = makeWindow, muteButtonOf, makeApp
 H.alertTexts, H.toggle = alertTexts, toggle
 
-function H.tick() mock_hs._everyTimer._fn() end
+function H.tick() H.everyTimer():fire() end
 
 function H.inCall(label)
 	local win = makeWindow(label)
-	mock_hs._running = makeApp(TeamsControl.teamsBundleID, { win })
-	mock_hs._micInUse = true
+	ctl.apps.teams = makeApp(TeamsControl.teamsBundleID, { win })
+	H.mic._inUse = true
 	return win
 end
 
-function H.runTeams() mock_hs._running = makeApp(TeamsControl.teamsBundleID, {}) end
+function H.runTeams() ctl.apps.teams = makeApp(TeamsControl.teamsBundleID, {}) end
 
 -- Starts the spoon with Teams running and opens its API socket.
 function H.connect()
 	H.runTeams()
 	TeamsControl:start()
-	local ws = mock_hs._sockets[#mock_hs._sockets]
-	ws._cb("open")
+	local ws = ctl.websockets[#ctl.websockets]
+	ctl.websocketEvent(ws, "open")
 	return ws
 end
 
-function H.update(ws, permissions, state)
-	ws._cb("received", { meetingUpdate = { meetingPermissions = permissions, meetingState = state } })
+function H.update(ws, permissions, meetingState)
+	ctl.websocketEvent(
+		ws,
+		"received",
+		{ meetingUpdate = { meetingPermissions = permissions, meetingState = meetingState } }
+	)
 end
 
 -- An open API socket with mute control ready, and Teams with a mute button in the AX tree.
 function H.readyToToggle(ws)
 	H.update(ws, { canToggleMute = true }, { isMuted = false, isInMeeting = true })
-	mock_hs._frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
-	mock_hs._running = mock_hs._frontmost
+	ctl.frontmost = makeApp(TeamsControl.teamsBundleID, { makeWindow("Mute mic") })
+	ctl.apps.teams = ctl.frontmost
 end
 
 return H
