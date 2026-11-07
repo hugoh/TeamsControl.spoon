@@ -1,6 +1,6 @@
 [tools]
 jactionlint = "2.2.0"
-pinact = "5.0.0"
+pinact = "5.0.2"
 biome = "2.5.13"
 ghalint = "1.5.6"
 gitleaks = "8.30.1"
